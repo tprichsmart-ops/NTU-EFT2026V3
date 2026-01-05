@@ -22,7 +22,9 @@ import {
   orderBy,
   query,
   getDocs,
-  limit
+  limit,
+  getDoc,
+  where
 } from 'firebase/firestore';
 import {
   ChevronRight,
@@ -62,7 +64,6 @@ import {
 
 const DOMAIN_SUFFIX = '@ntu.strategy.com';
 
-// Modified Roles based on new requirements
 const ROLES = {
   PROJECT_LEAD: 'project_lead', // 開發專案負責人 (最高權限)
   SALES: 'sales',               // 開發業務人員 (一般權限)
@@ -85,7 +86,6 @@ const getAppId = () => {
 const rawAppId = getAppId();
 const appId = String(rawAppId).replace(/[^a-zA-Z0-9_-]/g, '_');
 
-// Hardcoded config provided by user
 const USER_PROVIDED_CONFIG = {
   apiKey: "AIzaSyD2euHjulZko-qcQzQxJcAv4FHWTtjzqv0",
   authDomain: "ntu-etf2026.firebaseapp.com",
@@ -96,7 +96,6 @@ const USER_PROVIDED_CONFIG = {
   measurementId: "G-FBGETJVL6Q"
 };
 
-// Robust config retrieval
 const getFirebaseConfig = () => {
   try {
     if (typeof __firebase_config !== 'undefined' && __firebase_config) {
@@ -230,7 +229,7 @@ const useExcelExport = () => {
   return exportToExcel;
 };
 
-// --- Firestore Reference Helpers ---
+// --- Firestore Reference Helpers (Fixed Paths) ---
 const getUnitCollectionRef = (database) => collection(database, 'artifacts', appId, 'public', 'data', 'units');
 const getSettingsDocRef = (database) => doc(database, 'artifacts', appId, 'public', 'data', 'settings', 'config');
 const getMapChunksRef = (database) => collection(database, 'artifacts', appId, 'public', 'data', 'map_chunks');
@@ -301,23 +300,17 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db }) => {
   const [empId, setEmpId] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-
-  // Set default password if admin
-  useEffect(() => {
-     if(empId === '00095' && !password) {
-        setPassword('Ctom00095');
-     }
-  }, [empId]);
+  const [localError, setLocalError] = useState(''); // 本地錯誤狀態
 
   if (!isOpen) return null;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setIsLoading(true);
+    setLocalError(''); // 重置錯誤訊息
     const email = `${empId}${DOMAIN_SUFFIX}`;
     
     try {
-      // Determine Role based on Hardcoded rule
       const targetRole = (empId === '00095') ? ROLES.PROJECT_LEAD : ROLES.PENDING;
 
       if (isRegistering) {
@@ -339,12 +332,9 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db }) => {
         }
       } else {
         await signInWithEmailAndPassword(auth, email, password);
-        // We will update role in the background via listener, 
-        // but if 00095 logs in, we can force update the doc just in case
         if (db && empId === '00095') {
             const user = auth.currentUser;
             if(user) {
-                // Ensure 00095 is always Project Lead even if DB says otherwise
                 setDoc(getUserRoleRef(db, user.uid), {
                    employeeId: empId, 
                    role: ROLES.PROJECT_LEAD, 
@@ -363,7 +353,9 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db }) => {
       if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password' || error.code === "auth/invalid-credential") msg = '工號或密碼錯誤';
       if (error.code === 'auth/email-already-in-use') msg = '此工號已註冊，請直接登入';
       if (error.code === 'auth/operation-not-allowed') msg = '請至 Firebase Console 啟用 Email/Password 登入功能。';
-      setGlobalMessage({ text: msg, type: 'error' });
+      
+      // 顯示在 Modal 內部
+      setLocalError(msg); 
     } finally {
       setIsLoading(false);
     }
@@ -384,9 +376,18 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db }) => {
             <label className="block text-sm font-medium text-slate-700 mb-1">密碼</label>
             <input type="password" required value={password} onChange={(e) => setPassword(e.target.value)} className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="••••••" minLength={6} />
           </div>
+
+          {/* 錯誤訊息顯示區 */}
+          {localError && (
+             <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg flex items-start">
+                <AlertTriangle className="w-5 h-5 text-rose-500 mr-2 flex-shrink-0 mt-0.5" />
+                <span className="text-sm text-rose-700">{localError}</span>
+             </div>
+          )}
+
           <button type="submit" disabled={isLoading} className={`w-full py-2.5 rounded-lg text-white font-bold transition flex items-center justify-center ${isLoading ? 'bg-indigo-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700 shadow-lg shadow-indigo-500/30'}`}>{isLoading ? <Loader className="w-5 h-5 animate-spin" /> : (isRegistering ? '註冊' : '登入')}</button>
         </form>
-        <div className="mt-6 text-center text-sm text-slate-600">{isRegistering ? '已經有帳號？' : '還沒有帳號？'}<button onClick={() => setIsRegistering(!isRegistering)} className="ml-1 text-indigo-600 font-bold hover:underline">{isRegistering ? '直接登入' : '立即註冊'}</button></div>
+        <div className="mt-6 text-center text-sm text-slate-600">{isRegistering ? '已經有帳號？' : '還沒有帳號？'}<button onClick={() => { setIsRegistering(!isRegistering); setLocalError(''); }} className="ml-1 text-indigo-600 font-bold hover:underline">{isRegistering ? '直接登入' : '立即註冊'}</button></div>
       </div>
     </div>
   );
@@ -647,8 +648,6 @@ const Tab3TargetsMap = ({ appData, updatePrivateData, deleteUnits, exportToExcel
   const [mapImageUrl, setMapImageUrl] = useState(null);
   const [isMapLoading, setIsMapLoading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
-  
-  // Permission Logic
   const canEdit = userRole === ROLES.PROJECT_LEAD;
 
   const filteredUnits = useMemo(() => {
@@ -841,16 +840,6 @@ const MainApp = () => {
     }
   }, []);
   
-  // Show config modal if config missing
-  const [showConfigModal, setShowConfigModal] = useState(false);
-  useEffect(() => {
-      const config = getFirebaseConfig();
-      if (!config && !showConfigModal) {
-          setShowConfigModal(true);
-      }
-  }, []);
-
-
   // Auth Listener
   useEffect(() => {
     if (!auth) return;
