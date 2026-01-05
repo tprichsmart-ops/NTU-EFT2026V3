@@ -23,7 +23,7 @@ import {
   query,
   getDocs,
   limit,
-  getDoc // Added getDoc
+  getDoc
 } from 'firebase/firestore';
 import {
   ChevronRight,
@@ -101,7 +101,6 @@ const getFirebaseConfig = () => {
     }
     return USER_PROVIDED_CONFIG;
   } catch (e) {
-    console.warn("No valid firebase config found, using hardcoded config.");
     return USER_PROVIDED_CONFIG;
   }
 };
@@ -293,7 +292,7 @@ class ErrorBoundary extends React.Component {
 // Level 3: Feature Components
 // ==========================================
 
-const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db, userId }) => {
+const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db }) => {
   const [isRegistering, setIsRegistering] = useState(false);
   const [empId, setEmpId] = useState('');
   const [password, setPassword] = useState('');
@@ -307,22 +306,25 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db, userId }) => 
     const email = `${empId}${DOMAIN_SUFFIX}`;
     try {
       if (isRegistering) {
+        // 1. Create User
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
         const user = userCredential.user;
         
-        // Simplified Logic: Just set as VISITOR initially to ensure data creation succeeds
-        // The user can change role in Admin panel later or via direct DB edit if needed.
+        // 2. Try to write to DB, but don't block success if it fails (background sync)
         if (db) {
-            await setDoc(getUserRoleRef(db, user.uid), {
-              employeeId: empId, role: ROLES.VISITOR, email, createdAt: new Date().toISOString()
-            });
-            setGlobalMessage({ text: '註冊成功！預設為業務人員權限。', type: 'success' });
+            setDoc(getUserRoleRef(db, user.uid), {
+              employeeId: empId, 
+              role: ROLES.VISITOR, 
+              email, 
+              createdAt: new Date().toISOString()
+            }).catch(err => console.error("DB write failed, will retry later:", err));
         }
+        setGlobalMessage({ text: '註冊成功！預設為業務人員權限。', type: 'success' });
       } else {
         await signInWithEmailAndPassword(auth, email, password);
         setGlobalMessage({ text: '登入成功！', type: 'success' });
       }
-      onClose();
+      onClose(); // Close modal immediately on success
     } catch (error) {
       console.error(error);
       let msg = error.message;
@@ -821,7 +823,12 @@ const MainApp = () => {
     return onAuthStateChanged(auth, (user) => {
       if (user) {
         setUserId(user.uid);
-        if (user.isAnonymous) setUserRole(ROLES.GUEST);
+        if (user.isAnonymous) {
+             setUserRole(ROLES.GUEST);
+        } else {
+             // Immediate feedback: if logged in, assume visitor at least
+             setUserRole(ROLES.VISITOR); 
+        }
       } else {
         setUserId(null);
         setUserRole(ROLES.GUEST);
@@ -830,7 +837,7 @@ const MainApp = () => {
     });
   }, [auth]);
 
-  // Role Listener
+  // Role Listener - Force create doc if missing
   useEffect(() => {
     if (!db || !userId) return;
     if (auth.currentUser?.isAnonymous) return;
@@ -838,7 +845,14 @@ const MainApp = () => {
       if (doc.exists()) {
           setUserRole(doc.data().role || ROLES.VISITOR);
       } else {
-          // If logged in but no role doc, force VISITOR to prevent GUEST state
+          // If logged in but no role doc, force create it to prevent GUEST state limbo
+          // This self-healing ensures users never get stuck
+          setDoc(getUserRoleRef(db, userId), {
+              role: ROLES.VISITOR,
+              createdAt: new Date().toISOString(),
+              email: auth.currentUser.email
+          }, {merge: true}).catch(console.error);
+          
           setUserRole(ROLES.VISITOR);
       }
     }, (error) => console.log("Role listener info:", error.message)); 
