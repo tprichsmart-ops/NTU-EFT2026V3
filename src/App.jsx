@@ -79,7 +79,20 @@ const getAppId = () => {
 };
 const rawAppId = getAppId();
 const appId = String(rawAppId).replace(/[^a-zA-Z0-9_-]/g, '_');
-const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+
+// Robust config retrieval
+const getFirebaseConfig = () => {
+  try {
+    if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+      return JSON.parse(__firebase_config);
+    }
+    return null;
+  } catch (e) {
+    console.error("Error parsing firebase config:", e);
+    return null;
+  }
+};
+const firebaseConfig = getFirebaseConfig();
 const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
 // Initial Data Structure
@@ -117,7 +130,7 @@ const styles = {
 };
 
 // ==========================================
-// Level 1: Helpers & Hooks
+// Level 1: Helpers
 // ==========================================
 
 const safeStringify = (data) => JSON.stringify(data);
@@ -283,6 +296,7 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db, userId }) => 
       if (isRegistering) {
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
         const user = userCredential.user;
+        
         if (db) {
             const usersSnapshot = await getDocs(query(getAllUsersRef(db), limit(1)));
             const isFirstUser = usersSnapshot.empty;
@@ -461,8 +475,8 @@ const UnitTable = ({ units, selectedUnitIds, setSelectedUnitIds, setCurrentTab, 
             <tr key={unit.id} className="hover:bg-indigo-50/40 transition">
               <td className="p-3"><input type="checkbox" checked={selectedUnitIds.includes(unit.id)} onChange={() => setSelectedUnitIds((p) => p.includes(unit.id) ? p.filter((id) => id !== unit.id) : [...p, unit.id])} className={styles.checkbox} /></td>
               <td className="p-3 text-sm"><span className={`px-2 py-0.5 rounded text-xs font-bold ${unit.category === 'Academic' ? 'bg-sky-100 text-sky-700' : 'bg-orange-100 text-orange-700'}`}>{unit.category === 'Academic' ? '學術' : '行政'}</span></td>
-              <td className="p-3 text-sm font-medium text-gray-900">{unit.name}</td>
-              <td className="p-3 text-sm text-gray-600">{unit.contactName}<span className="block text-xs text-gray-400">{unit.contactPhone}</span></td>
+              <td className="p-3 text-sm font-medium text-gray-900">{unit.name || '未命名'}</td>
+              <td className="p-3 text-sm text-gray-600">{unit.contactName || '-'}<span className="block text-xs text-gray-400">{unit.contactPhone || '-'}</span></td>
               <td className="p-3 text-sm"><span className={`px-2 py-1 inline-flex text-xs leading-5 font-bold rounded-full shadow-sm ${unit.attackStatus === 'client' ? 'bg-emerald-100 text-emerald-800' : unit.attackStatus === 'settled_non_client' ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'}`}>{unit.attackStatus === 'client' ? '本牌客戶' : unit.attackStatus === 'settled_non_client' ? '暫定結案' : '進攻中'}</span></td>
               <td className="p-3 text-right"><button onClick={() => { setCurrentTab('record'); setEditingUnitId(unit.id); setIsNewUnit(false); }} className="px-3 py-1.5 text-xs font-medium bg-indigo-50 text-indigo-600 rounded-lg hover:bg-indigo-100 transition border border-indigo-200">詳細</button></td>
             </tr>
@@ -572,7 +586,10 @@ const Tab2Guidelines = ({ appData }) => {
 
 const Tab3TargetsMap = ({ appData, updatePrivateData, deleteUnits, exportToExcel, db, userId, setGlobalMessage, setEditingUnitId, setIsNewUnit, setCurrentTab, userRole }) => {
   const { units, settings } = appData;
-  const { areaMap, equipmentDB } = settings || { areaMap: [], equipmentDB: [] };
+  // CRITICAL FIX: Default values to prevent white screen crashes on undefined data
+  const areaMap = settings?.areaMap || [];
+  const equipmentDB = settings?.equipmentDB || [];
+  
   const totalUnits = units.length;
   const currentClients = units.filter((u) => u.attackStatus === 'client').length;
   const adminUnits = units.filter((u) => u.category === 'Administrative').length;
@@ -587,10 +604,24 @@ const Tab3TargetsMap = ({ appData, updatePrivateData, deleteUnits, exportToExcel
 
   const filteredUnits = useMemo(() => {
     return units.filter((unit) => {
+      // Safety Check: Ensure properties exist before calling .includes
+      const unitName = unit.name || '';
+      const unitId = unit.id || '';
+      const unitContact = unit.contactName || '';
+      const unitPhone = unit.contactPhone || '';
+      const unitCategory = unit.category || '';
+
       let equipmentJson = safeParse(unit.equipment);
-      if (!Array.isArray(equipmentJson)) equipmentJson = []; // Safety check
+      if (!Array.isArray(equipmentJson)) equipmentJson = []; 
+      
       const hasMatchingEquipment = filter.brand || filter.model ? equipmentJson.some((eq) => (filter.brand === '' || eq.brand.includes(filter.brand)) && (filter.model === '' || eq.model.includes(filter.model))) : true;
-      return (filter.id === '' || unit.id.includes(filter.id)) && (filter.type === '' || unit.category === filter.type) && (filter.name === '' || unit.name.includes(filter.name)) && (filter.contact === '' || unit.contactName.includes(filter.contact)) && hasMatchingEquipment;
+      
+      return (filter.id === '' || unitId.includes(filter.id)) && 
+             (filter.type === '' || unitCategory === filter.type) && 
+             (filter.name === '' || unitName.includes(filter.name)) && 
+             (filter.contact === '' || unitContact.includes(filter.contact)) && 
+             (filter.phone === '' || unitPhone.includes(filter.phone)) && 
+             hasMatchingEquipment;
     });
   }, [units, filter]);
 
@@ -726,7 +757,7 @@ const TabAdmin = ({ db, currentUserId }) => {
 // Level 6: Main App
 // ==========================================
 
-const App = () => {
+const MainApp = () => {
   const [currentTab, setCurrentTab] = useState('targets');
   const [db, setDb] = useState(null);
   const [auth, setAuth] = useState(null);
@@ -746,6 +777,10 @@ const App = () => {
 
   // Initialize Firebase
   useEffect(() => {
+    if (!firebaseConfig || Object.keys(firebaseConfig).length === 0) {
+        console.error("Firebase config missing");
+        return;
+    }
     const app = initializeApp(firebaseConfig);
     setDb(getFirestore(app));
     setAuth(getAuth(app));
@@ -772,7 +807,7 @@ const App = () => {
     if (auth.currentUser?.isAnonymous) return;
     return onSnapshot(getUserRoleRef(db, userId), (doc) => {
       if (doc.exists()) setUserRole(doc.data().role || ROLES.VISITOR);
-    }, (error) => console.log("Role listener info:", error.message)); // Swallow permission errors during initial load
+    }, (error) => console.log("Role listener info:", error.message)); 
   }, [db, userId]);
 
   // Data Listener (Units & Settings)
@@ -918,7 +953,6 @@ const App = () => {
   if (userRole === ROLES.ADMIN) navItems.push({ id: 'admin', label: '人員管理', icon: <UserCog className="w-4 h-4" /> });
 
   return (
-    <ErrorBoundary>
       <div className="min-h-screen bg-slate-50 font-sans text-slate-900">
         <header className="sticky top-0 z-50 backdrop-blur-md bg-white/80 border-b border-slate-200 shadow-sm">
           <div className="max-w-7xl mx-auto px-4 h-16 flex justify-between items-center">
@@ -934,8 +968,16 @@ const App = () => {
         {globalMessage.text && <div className={`fixed top-24 right-6 p-4 rounded-xl shadow-2xl z-50 flex items-center space-x-3 animate-slide-in ${globalMessage.type === 'error' ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'}`}><span className="font-medium">{globalMessage.text}</span><button onClick={() => setGlobalMessage({ text: '', type: '' })}><X className="w-4 h-4" /></button></div>}
         <LoginModal isOpen={isLoginModalOpen} onClose={() => setIsLoginModalOpen(false)} auth={auth} db={db} userId={userId} setGlobalMessage={setGlobalMessage} />
       </div>
-    </ErrorBoundary>
   );
 };
+
+// Wrap App in ErrorBoundary at the root level
+const App = () => {
+    return (
+        <ErrorBoundary>
+            <MainApp />
+        </ErrorBoundary>
+    )
+}
 
 export default App;
