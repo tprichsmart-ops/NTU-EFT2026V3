@@ -1217,7 +1217,13 @@ const MainApp = () => {
     if (auth.currentUser?.isAnonymous) return;
 
     return onSnapshot(getUserRoleRef(db, userId), (doc) => {
-      const isSuperAdmin = auth.currentUser?.displayName === SUPER_ADMIN_ID;
+      // 判斷是否為超級管理員 (00095)
+      // 邏輯增強：同時檢查 DisplayName 和 Email 前綴，避免因 DisplayName 遺失導致權限錯誤
+      const userEmail = auth.currentUser?.email || '';
+      const emailPrefix = userEmail.split('@')[0].toUpperCase();
+      const displayName = (auth.currentUser?.displayName || '').toUpperCase();
+      
+      const isSuperAdmin = displayName === SUPER_ADMIN_ID || emailPrefix === SUPER_ADMIN_ID;
 
       // 00095 Hard Override Logic (Enforce Admin)
       if(isSuperAdmin) {
@@ -1225,6 +1231,10 @@ const MainApp = () => {
           // Self-heal: If DB says anything else, fix it silently
           if(doc.exists() && doc.data().role !== ROLES.ADMIN) {
                setDoc(getUserRoleRef(db, userId), { role: ROLES.ADMIN }, {merge: true});
+          }
+          // Self-heal: Ensure Display Name is set if missing
+          if (auth.currentUser && !auth.currentUser.displayName) {
+               updateProfile(auth.currentUser, { displayName: SUPER_ADMIN_ID }).catch(console.error);
           }
           return;
       }
