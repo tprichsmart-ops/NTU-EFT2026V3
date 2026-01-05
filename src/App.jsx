@@ -15,10 +15,6 @@ import {
   addDoc,
   updateDoc,
   deleteDoc,
-  query,
-  where,
-  getDocs,
-  runTransaction,
 } from 'firebase/firestore';
 import {
   ChevronRight,
@@ -37,14 +33,23 @@ import {
   Activity,
   Users,
   Building,
-  Target
+  Target,
+  FileSpreadsheet,
+  Info
 } from 'lucide-react';
 
 // --- Global Firebase Configuration and Utility Functions ---
 
-// Sanitize appId to ensure it's a valid single-segment path identifier
-const rawAppId = typeof __app_id !== 'undefined' ? __app_id : 'ntu-strategy-default-app';
+// Robust appId retrieval to prevent permission errors due to path mismatch
+const getAppId = () => {
+  if (typeof __app_id !== 'undefined') return __app_id;
+  if (typeof window !== 'undefined' && window.__app_id) return window.__app_id;
+  return 'ntu-strategy-default-app';
+};
+
+const rawAppId = getAppId();
 const appId = String(rawAppId).replace(/[^a-zA-Z0-9_-]/g, '_');
+console.log('Initializing App with ID:', appId);
 
 const firebaseConfig =
   typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
@@ -61,16 +66,49 @@ const safeParse = (data) => {
   }
 };
 
-// --- Styles Constants (Replaces @apply for StackBlitz compatibility) ---
+// Image Compression Helper
+const compressImage = (file, maxWidth = 1200, quality = 0.7) => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (event) => {
+      const img = new Image();
+      img.src = event.target.result;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+
+        if (width > maxWidth) {
+          height = (maxWidth / width) * height;
+          width = maxWidth;
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+        
+        // Convert to Base64 with quality reduction
+        const dataUrl = canvas.toDataURL('image/jpeg', quality);
+        resolve(dataUrl);
+      };
+      img.onerror = (error) => reject(error);
+    };
+    reader.onerror = (error) => reject(error);
+  });
+};
+
+// --- Styles Constants ---
 const styles = {
-  formInput: "w-full px-4 py-2 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 outline-none",
-  formSelect: "w-full px-4 py-2 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 outline-none",
-  formTextarea: "w-full px-4 py-2 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 outline-none",
-  btnPrimary: "px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition shadow-lg shadow-indigo-500/30 flex items-center justify-center font-medium active:scale-95",
-  btnSecondary: "px-4 py-2 bg-white text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 transition shadow-sm flex items-center justify-center font-medium active:scale-95",
+  formInput: "w-full px-4 py-2 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 outline-none text-slate-800",
+  formSelect: "w-full px-4 py-2 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 outline-none text-slate-800",
+  formTextarea: "w-full px-4 py-2 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 outline-none text-slate-800",
+  btnPrimary: "px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition shadow-lg shadow-indigo-500/30 flex items-center justify-center font-medium active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed",
+  btnSecondary: "px-4 py-2 bg-white text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 transition shadow-sm flex items-center justify-center font-medium active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed",
   btnDanger: "px-4 py-2 bg-rose-50 text-rose-600 border border-rose-200 rounded-lg hover:bg-rose-100 transition flex items-center justify-center font-medium disabled:opacity-50 disabled:cursor-not-allowed",
   btnInfo: "px-4 py-2 bg-sky-50 text-sky-600 border border-sky-200 rounded-lg hover:bg-sky-100 transition flex items-center justify-center font-medium",
-  checkbox: "w-5 h-5 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500"
+  checkbox: "w-5 h-5 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
 };
 
 // --- Initial Data Structures for Defaults ---
@@ -183,6 +221,7 @@ const useExcelExport = () => {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
+  
   return exportToExcel;
 };
 
@@ -216,10 +255,15 @@ const App = () => {
   }, []);
 
   // Firestore Refs
+  // CHANGE: Moved units to PRIVATE user path to fix permission errors
   const getUnitCollectionRef = useCallback(
-    (database) => collection(database, 'artifacts', appId, 'public', 'data', 'units'),
+    (database, uid) => {
+      if (!uid) return null;
+      return collection(database, 'artifacts', appId, 'users', uid, 'units');
+    },
     []
   );
+  
   const getPrivateDocRef = useCallback(
     (database, uid, collectionName, docId) =>
       doc(
@@ -229,7 +273,7 @@ const App = () => {
     []
   );
 
-  // Initialize Firebase and Auth (Follows Mandatory Pattern)
+  // Initialize Firebase and Auth
   useEffect(() => {
     try {
       if (Object.keys(firebaseConfig).length === 0) {
@@ -244,18 +288,25 @@ const App = () => {
       setDb(database);
       setAuth(authentication);
 
-      // Auth Logic: Init auth first, then setup listener
       const initAuth = async () => {
         try {
           if (initialAuthToken) {
+            console.log("Attempting sign in with custom token...");
             await signInWithCustomToken(authentication, initialAuthToken);
           } else {
+            console.log("Attempting anonymous sign in...");
             await signInAnonymously(authentication);
           }
         } catch (e) {
-          console.error('Authentication failed:', e);
-          setGlobalMessage({ text: '驗證失敗，請重新整理頁面。', type: 'error' });
-          setIsLoading(false);
+          console.warn('Initial auth failed, trying fallback to anonymous:', e);
+          // Fallback mechanism: if custom token fails (e.g. expired), try anonymous
+          try {
+            await signInAnonymously(authentication);
+          } catch (anonErr) {
+            console.error('Anonymous auth also failed:', anonErr);
+            setGlobalMessage({ text: '驗證失敗，請重新整理頁面。', type: 'error' });
+            setIsLoading(false);
+          }
         }
       };
 
@@ -263,8 +314,10 @@ const App = () => {
 
       const unsubscribe = onAuthStateChanged(authentication, (user) => {
         if (user) {
+          console.log("User authenticated:", user.uid);
           setUserId(user.uid);
         } else {
+          console.log("User signed out");
           setUserId(null);
         }
         setIsLoading(false);
@@ -282,9 +335,13 @@ const App = () => {
     // Only proceed if db is initialized and we have a valid userId from Auth
     if (!db || !userId) return;
 
-    // Listener for Public Units Data
-    const unsubscribeUnits = onSnapshot(
-      getUnitCollectionRef(db),
+    console.log("Setting up Firestore listeners for user:", userId);
+
+    const unitsRef = getUnitCollectionRef(db, userId);
+    
+    // Listener for Units Data (Now Private)
+    const unsubscribeUnits = unitsRef ? onSnapshot(
+      unitsRef,
       (snapshot) => {
         const units = snapshot.docs.map((doc) => ({
           id: doc.id,
@@ -297,9 +354,9 @@ const App = () => {
       },
       (error) => {
         console.error('Error listening to units:', error);
-        // Silent fail or user notification depending on severity
+        // This usually means user path permission issues or quota, but should be fixed by private path
       }
-    );
+    ) : () => {};
 
     // Listener for Private Settings Data
     const settingsDocRef = getPrivateDocRef(db, userId, 'settings', 'params');
@@ -340,7 +397,7 @@ const App = () => {
       unsubscribeUnits();
       unsubscribeSettings();
     };
-  }, [db, userId]); // Re-run when userId changes (authenticated)
+  }, [db, userId]);
 
   const updatePrivateData = async (fields) => {
     if (!db || !userId) return;
@@ -357,7 +414,8 @@ const App = () => {
   const updateUnit = async (id, data) => {
     if (!db || !userId) return;
     try {
-      const docRef = doc(getUnitCollectionRef(db), id);
+      // Use private unit collection
+      const docRef = doc(getUnitCollectionRef(db, userId), id);
       const updateData = {};
       Object.keys(data).forEach((key) => {
         if (
@@ -379,7 +437,8 @@ const App = () => {
     if (!db || !userId) return;
     try {
       await Promise.all(
-        ids.map((id) => deleteDoc(doc(getUnitCollectionRef(db), id)))
+        // Use private unit collection
+        ids.map((id) => deleteDoc(doc(getUnitCollectionRef(db, userId), id)))
       );
     } catch (e) {
       console.error('Error deleting units:', e);
@@ -1569,15 +1628,21 @@ const App = () => {
       setMapState((p) => ({ ...p, current: { x, y } }));
     };
 
-    const handleMapFileUpload = (event) => {
+    const handleMapFileUpload = async (event) => {
       const file = event.target.files[0];
-      if (file) {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          updatePrivateData({ uploadedMapUrl: reader.result });
-          setMapState((p) => ({ ...p, uploadedFile: null }));
-        };
-        reader.readAsDataURL(file);
+      if (!file) return;
+
+      try {
+        // Compress image before setting state/saving to prevent Firestore size issues
+        const compressedBase64 = await compressImage(file);
+        
+        // Update both local state and Firestore
+        updatePrivateData({ uploadedMapUrl: compressedBase64 });
+        setMapState((p) => ({ ...p, uploadedFile: null }));
+        
+      } catch (error) {
+        console.error("Image processing error:", error);
+        alert("圖片處理失敗，請嘗試較小的圖片。");
       }
     };
 
@@ -1607,6 +1672,29 @@ const App = () => {
         { key: 'history', label: '拜訪紀錄', width: 50 },
       ];
       exportToExcel(units, '進攻對象概覽', '對象清單', headers);
+    };
+
+    const downloadImportTemplate = () => {
+      const headers = [
+        { key: 'name', label: '客戶名稱(必填)', width: 20 },
+        { key: 'category', label: '類型(Academic/Administrative)', width: 20 },
+        { key: 'subgroup', label: '分組', width: 15 },
+        { key: 'contactName', label: '聯絡人', width: 15 },
+        { key: 'contactPhone', label: '電話', width: 15 },
+        { key: 'buildingId', label: '棟別代號(必填)', width: 15 },
+        { key: 'areaCode', label: '區域編號', width: 15 },
+      ];
+      // Create a dummy row for example
+      const exampleData = [{
+        name: '範例系辦',
+        category: 'Academic',
+        subgroup: '獨立空間',
+        contactName: '王小明',
+        contactPhone: '02-12345678',
+        buildingId: 'A1',
+        areaCode: 'R1'
+      }];
+      exportToExcel(exampleData, '進攻對象匯入範本', '匯入範本', headers);
     };
 
     return (
@@ -1652,8 +1740,9 @@ const App = () => {
             <p className="font-bold text-xl text-orange-600 mb-2">行政單位</p>
             <div className="flex justify-between items-center text-slate-700 px-4">
               <span>總數: {adminUnits}</span>
-              <span className="font-bold bg-orange-200 px-2 py-1 rounded-md text-orange-800">
-                獨立空間: {adminSubgroups}
+              <span className="font-bold bg-orange-200 px-2 py-1 rounded-md text-orange-800 text-sm">
+                獨立空間: {adminSubgroups} <br/>
+                <span className="text-[10px] font-normal opacity-80">(大單位底下獨立空間)</span>
               </span>
             </div>
           </div>
@@ -1661,8 +1750,9 @@ const App = () => {
             <p className="font-bold text-xl text-sky-600 mb-2">學術單位</p>
             <div className="flex justify-between items-center text-slate-700 px-4">
               <span>總數: {academicUnits}</span>
-              <span className="font-bold bg-sky-200 px-2 py-1 rounded-md text-sky-800">
-                獨立空間: {academicSubgroups}
+              <span className="font-bold bg-sky-200 px-2 py-1 rounded-md text-sky-800 text-sm">
+                獨立空間: {academicSubgroups} <br/>
+                <span className="text-[10px] font-normal opacity-80">(大單位底下獨立空間)</span>
               </span>
             </div>
           </div>
@@ -1697,23 +1787,23 @@ const App = () => {
                     current: null,
                   }))
                 }
-                className={`${styles.btnSecondary} ${
+                className={`px-4 py-2 rounded-lg font-medium transition flex items-center ${
                   mapState.isDrawing
-                    ? 'bg-rose-500 text-white border-transparent hover:bg-rose-600'
-                    : 'bg-slate-600 text-white border-transparent hover:bg-slate-500'
-                }`}
+                    ? 'bg-rose-500 text-white hover:bg-rose-600'
+                    : 'bg-indigo-500 text-white hover:bg-indigo-600'
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
                 disabled={!uploadedMapUrl}
               >
                 {mapState.isDrawing ? '點擊結束' : '圈選區域'}
               </button>
-              <label className={`${styles.btnPrimary} cursor-pointer flex items-center bg-indigo-600 hover:bg-indigo-700`}>
+              <label className={`${styles.btnPrimary} cursor-pointer flex items-center bg-slate-600 hover:bg-slate-700`}>
                 <input
                   type="file"
                   accept="image/*"
                   className="hidden"
                   onChange={handleMapFileUpload}
                 />
-                <MapPin className="w-4 h-4 mr-1" /> 上傳
+                <MapPin className="w-4 h-4 mr-1" /> 更換地圖
               </label>
             </div>
           </div>
@@ -1729,7 +1819,8 @@ const App = () => {
               className="w-full h-full transition-transform duration-500 ease-out"
               style={{
                 backgroundImage: `url(${uploadedMapUrl})`,
-                backgroundSize: 'cover',
+                backgroundSize: 'contain',
+                backgroundRepeat: 'no-repeat',
                 backgroundPosition: 'center',
               }}
             ></div>
@@ -1791,8 +1882,8 @@ const App = () => {
             )}
 
             {mapState.isDrawing && (
-              <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 bg-black/70 text-white px-4 py-2 rounded-full backdrop-blur-md text-sm">
-                請在地圖上點擊兩次以定義區域範圍 ({mapState.areaCodeInput})
+              <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 bg-black/70 text-white px-4 py-2 rounded-full backdrop-blur-md text-sm pointer-events-none">
+                {mapState.start ? "再次點擊以完成區域選取" : `請點擊開始選取區域 (${mapState.areaCodeInput || "未輸入編號"})`}
               </div>
             )}
           </div>
@@ -1899,6 +1990,12 @@ const App = () => {
                 className={`${styles.btnDanger} py-1.5 text-sm`}
               >
                 <Trash2 className="w-4 h-4 mr-1" /> 刪除 ({selectedUnitIds.length})
+              </button>
+              <button
+                onClick={downloadImportTemplate}
+                className={`${styles.btnSecondary} py-1.5 text-sm text-slate-600`}
+              >
+                <FileSpreadsheet className="w-4 h-4 mr-1" /> 下載匯入範本
               </button>
               <button
                 onClick={exportUnits}
@@ -2115,7 +2212,7 @@ const App = () => {
     };
 
     if (isNewUnit) {
-      await addDoc(getUnitCollectionRef(db), {
+      await addDoc(getUnitCollectionRef(db, userId), {
         ...dataToSave,
         createdAt: new Date().toISOString(),
         equipment: safeStringify(dataToSave.equipment || []),
@@ -2439,16 +2536,22 @@ const App = () => {
           {(newUnitData.category === 'Academic' ||
             newUnitData.category === 'Administrative') && (
             <InputGroup label="獨立空間分組">
-              <select
-                value={newUnitData.subgroup || ''}
-                onChange={(e) =>
-                  setNewUnitData((p) => ({ ...p, subgroup: e.target.value }))
-                }
-                className={styles.formSelect}
-              >
-                <option value="">一般</option>
-                <option value="獨立空間">獨立空間</option>
-              </select>
+              <div className="relative">
+                <select
+                  value={newUnitData.subgroup || ''}
+                  onChange={(e) =>
+                    setNewUnitData((p) => ({ ...p, subgroup: e.target.value }))
+                  }
+                  className={styles.formSelect}
+                >
+                  <option value="">一般</option>
+                  <option value="獨立空間">獨立空間</option>
+                </select>
+                <div className="absolute right-0 -bottom-5 text-[10px] text-slate-500 flex items-center">
+                  <Info className="w-3 h-3 mr-1" />
+                  大單位底下獨立空間
+                </div>
+              </div>
             </InputGroup>
           )}
         </div>
