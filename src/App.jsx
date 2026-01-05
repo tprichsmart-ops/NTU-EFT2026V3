@@ -136,7 +136,7 @@ const initialSettings = {
   areaMap: [],
 };
 
-// Styles - Using the nicer aesthetics from Version 2
+// Styles
 const styles = {
   formInput: "w-full px-4 py-2 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 outline-none text-slate-800",
   formSelect: "w-full px-4 py-2 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 outline-none text-slate-800",
@@ -306,7 +306,6 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [localError, setLocalError] = useState('');
 
-  // Reset fields when opening modal
   useEffect(() => {
     if(isOpen) {
         setEmpId('');
@@ -326,17 +325,11 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db }) => {
     
     try {
       if (isRegistering) {
-        // 1. Create User
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
         const user = userCredential.user;
-        
-        // 2. Set Display Name to Employee ID
         await updateProfile(user, { displayName: empId });
-
-        // 3. Determine Role - 00095 gets ADMIN immediately, everyone else PENDING
         const initialRole = empId === SUPER_ADMIN_ID ? ROLES.ADMIN : ROLES.PENDING;
 
-        // 4. Attempt DB write
         if (db) {
             await setDoc(getUserRoleRef(db, user.uid), {
               employeeId: empId, 
@@ -384,14 +377,12 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db }) => {
             <label className="block text-sm font-medium text-slate-700 mb-1">密碼</label>
             <input type="password" required value={password} onChange={(e) => setPassword(e.target.value)} className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="••••••" minLength={6} />
           </div>
-
           {localError && (
               <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg flex items-start">
                   <AlertTriangle className="w-5 h-5 text-rose-500 mr-2 flex-shrink-0 mt-0.5" />
                   <span className="text-sm text-rose-700">{localError}</span>
               </div>
           )}
-
           <button type="submit" disabled={isLoading} className={`w-full py-2.5 rounded-lg text-white font-bold transition flex items-center justify-center ${isLoading ? 'bg-indigo-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700 shadow-lg shadow-indigo-500/30'}`}>{isLoading ? <Loader className="w-5 h-5 animate-spin" /> : (isRegistering ? '註冊' : '登入')}</button>
         </form>
         <div className="mt-6 text-center text-sm text-slate-600">{isRegistering ? '已經有帳號？' : '還沒有帳號？'}<button onClick={() => { setIsRegistering(!isRegistering); setLocalError(''); }} className="ml-1 text-indigo-600 font-bold hover:underline">{isRegistering ? '直接登入' : '立即註冊'}</button></div>
@@ -540,10 +531,6 @@ const UnitTable = ({ units, selectedUnitIds, setSelectedUnitIds, setCurrentTab, 
     </div>
   );
 };
-
-// ==========================================
-// Level 4: Tab Views (MUST be defined before App)
-// ==========================================
 
 const UnitRecordView = ({ newUnitData, setNewUnitData, handleSaveUnit, handleAddHistory, isNewUnit, appData, setEditingUnitId, setIsNewUnit, userRole }) => {
   const { equipment, characteristics, history } = newUnitData;
@@ -1192,11 +1179,13 @@ const MainApp = () => {
         if (user.isAnonymous) {
              setUserRole(ROLES.GUEST);
         } else {
-             // Default to PENDING to prevent leak before role check finishes
-             // UNLESS displayName is the super admin code
-             if (user.displayName === SUPER_ADMIN_ID) {
+             // IMMEDIATE CHECK: If email matches super admin pattern, GRANT ADMIN NOW.
+             const emailPrefix = user.email?.split('@')[0].toUpperCase();
+             if (emailPrefix === SUPER_ADMIN_ID) {
                  setUserRole(ROLES.ADMIN);
+                 console.log("Super Admin detected via Auth State");
              } else {
+                 // Default to PENDING to prevent leak before role check finishes
                  setUserRole(ROLES.PENDING); 
              }
         }
@@ -1222,8 +1211,9 @@ const MainApp = () => {
       const userEmail = auth.currentUser?.email || '';
       const emailPrefix = userEmail.split('@')[0].toUpperCase();
       const displayName = (auth.currentUser?.displayName || '').toUpperCase();
+      const dbEmployeeId = (doc.exists() ? doc.data().employeeId : '').toUpperCase();
       
-      const isSuperAdmin = displayName === SUPER_ADMIN_ID || emailPrefix === SUPER_ADMIN_ID;
+      const isSuperAdmin = displayName === SUPER_ADMIN_ID || emailPrefix === SUPER_ADMIN_ID || dbEmployeeId === SUPER_ADMIN_ID;
 
       // 00095 Hard Override Logic (Enforce Admin)
       if(isSuperAdmin) {
@@ -1329,6 +1319,27 @@ const MainApp = () => {
     }
   };
 
+  const forceSuperAdminRefresh = async () => {
+      if(!auth.currentUser || !db) return;
+      
+      const userEmail = auth.currentUser.email || '';
+      const emailPrefix = userEmail.split('@')[0].toUpperCase();
+      
+      if(emailPrefix === SUPER_ADMIN_ID) {
+          try {
+              // Force update DB
+              await setDoc(getUserRoleRef(db, auth.currentUser.uid), { role: ROLES.ADMIN, employeeId: SUPER_ADMIN_ID }, {merge: true});
+              // Force local state
+              setUserRole(ROLES.ADMIN);
+              setGlobalMessage({ text: '身分驗證成功，已切換至管理員模式', type: 'success' });
+          } catch(e) {
+              setGlobalMessage({ text: '更新失敗: ' + e.message, type: 'error' });
+          }
+      } else {
+          setGlobalMessage({ text: `您的帳號 (${emailPrefix}) 並非超級管理員 (${SUPER_ADMIN_ID})`, type: 'error' });
+      }
+  }
+
   const renderTabContent = () => {
     if (userRole === ROLES.PENDING) {
         return (
@@ -1340,7 +1351,10 @@ const MainApp = () => {
                     <h2 className="text-xl font-bold text-slate-800 mb-2">帳號審核中</h2>
                     <p className="text-slate-600 mb-4">您的帳號目前處於「待定」狀態。</p>
                     <p className="text-sm text-slate-400">請聯繫工號 {SUPER_ADMIN_ID} 管理員開通您的權限。</p>
-                    <button onClick={() => window.location.reload()} className="mt-6 text-indigo-600 hover:underline text-sm flex items-center justify-center w-full"><RefreshCw size={14} className="mr-1"/> 重新整理狀態</button>
+                    <div className="space-y-3 mt-6">
+                        <button onClick={() => window.location.reload()} className="text-indigo-600 hover:underline text-sm flex items-center justify-center w-full"><RefreshCw size={14} className="mr-1"/> 重新整理狀態</button>
+                        <button onClick={forceSuperAdminRefresh} className="text-rose-600 hover:underline text-xs flex items-center justify-center w-full font-bold">我是管理員 (00095) 強制驗證</button>
+                    </div>
                 </div>
             </div>
         );
