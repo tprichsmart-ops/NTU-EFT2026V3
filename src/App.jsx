@@ -45,14 +45,11 @@ import {
   Users,
   Building,
   Target,
-  FileSpreadsheet,
   Info,
-  Image as ImageIcon,
   UploadCloud,
   RefreshCw,
   LogIn,
   LogOut,
-  UserCog,
   Shield,
   User,
   Settings,
@@ -64,15 +61,14 @@ import {
 // ==========================================
 
 const DOMAIN_SUFFIX = '@ntu.strategy.com';
-// 00095 為最高權限管理員
 const SUPER_ADMIN_ID = '00095';
 
 const ROLES = {
-  ADMIN: 'admin',                // 網站管理員 (00095 專用)
-  PROJECT_LEAD: 'project_lead',  // 開發專案負責人
-  SALES: 'sales',                // 開發業務人員
-  PENDING: 'pending',            // 註冊待定人員
-  GUEST: 'guest'                 // 未登入
+  ADMIN: 'admin',
+  PROJECT_LEAD: 'project_lead',
+  SALES: 'sales',
+  PENDING: 'pending',
+  GUEST: 'guest'
 };
 
 const ROLE_LABELS = {
@@ -114,7 +110,6 @@ const getFirebaseConfig = () => {
 
 const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
-// Initial Data Structure
 const initialSettings = {
   buildings: [
     { name: '行政大樓', code: 'A1' },
@@ -325,23 +320,44 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db }) => {
     
     try {
       if (isRegistering) {
+        // 1. Create User (Authentication) - 這是最關鍵的一步，成功代表帳號已存在
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
         const user = userCredential.user;
+        
+        // 2. Set Display Name
         await updateProfile(user, { displayName: empId });
+
+        // 3. Determine Role
         const initialRole = empId === SUPER_ADMIN_ID ? ROLES.ADMIN : ROLES.PENDING;
 
+        // 4. Attempt DB write with Timeout Protection (容錯機制)
+        // 如果 DB 寫入卡住超過 2.5 秒，我們就直接略過，讓背景監聽器去補資料，避免 UI 卡死
         if (db) {
-            await setDoc(getUserRoleRef(db, user.uid), {
+            const userDocData = {
               employeeId: empId, 
               role: initialRole, 
               email, 
               createdAt: new Date().toISOString()
-            });
-            
-            if (initialRole === ROLES.PENDING) {
-                setGlobalMessage({ text: '註冊成功！請等待 00095 管理員審核權限。', type: 'info' });
-            } else {
-                setGlobalMessage({ text: '管理員註冊成功！', type: 'success' });
+            };
+
+            const writePromise = setDoc(getUserRoleRef(db, user.uid), userDocData);
+            const timeoutPromise = new Promise((_, reject) => 
+                setTimeout(() => reject(new Error("DB Write Timeout")), 2500)
+            );
+
+            try {
+                await Promise.race([writePromise, timeoutPromise]);
+                // 如果成功寫入
+                if (initialRole === ROLES.PENDING) {
+                    setGlobalMessage({ text: '註冊成功！請等待 00095 管理員審核權限。', type: 'info' });
+                } else {
+                    setGlobalMessage({ text: '管理員註冊成功！', type: 'success' });
+                }
+            } catch (dbError) {
+                console.warn("Database write slow or failed, falling back to background sync:", dbError);
+                // 即使 DB 寫入失敗，因為 Auth 已經成功，我們還是視為成功登入
+                // 讓 MainApp 的 Role Listener 去自動修復資料
+                setGlobalMessage({ text: '註冊成功 (資料同步中...)', type: 'success' });
             }
         }
       } else {
@@ -531,6 +547,10 @@ const UnitTable = ({ units, selectedUnitIds, setSelectedUnitIds, setCurrentTab, 
     </div>
   );
 };
+
+// ==========================================
+// Level 4: Tab Views (MUST be defined before App)
+// ==========================================
 
 const UnitRecordView = ({ newUnitData, setNewUnitData, handleSaveUnit, handleAddHistory, isNewUnit, appData, setEditingUnitId, setIsNewUnit, userRole }) => {
   const { equipment, characteristics, history } = newUnitData;
@@ -1103,7 +1123,7 @@ const Tab5Settings = ({ appData, updatePrivateData }) => {
 const TabAdmin = ({ db, currentUserId }) => {
   const [users, setUsers] = useState([]);
   useEffect(() => {
-    if (!db || !currentUserId) return; // Added guard
+    if (!db || !currentUserId) return; 
     const unsubscribe = onSnapshot(getAllUsersRef(db), (snap) => setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
     return () => unsubscribe();
   }, [db, currentUserId]);
@@ -1150,12 +1170,10 @@ const MainApp = () => {
   const [editingUnitId, setEditingUnitId] = useState(null);
   const [isNewUnit, setIsNewUnit] = useState(false);
   
-  // State for form data - lifted to App level
   const [newUnitData, setNewUnitData] = useState({
       name: '', category: 'Academic', subgroup: '', buildingId: '', attackStatus: 'engaged', contactName: '', contactPhone: '', areaCode: '', equipment: [], characteristics: [], history: []
   });
 
-  // Initialize Firebase
   useEffect(() => {
     const firebaseConfig = getFirebaseConfig();
     if (!firebaseConfig || Object.keys(firebaseConfig).length === 0) {
@@ -1170,7 +1188,6 @@ const MainApp = () => {
     }
   }, []);
   
-  // Auth Listener
   useEffect(() => {
     if (!auth) return;
     return onAuthStateChanged(auth, (user) => {
@@ -1179,13 +1196,11 @@ const MainApp = () => {
         if (user.isAnonymous) {
              setUserRole(ROLES.GUEST);
         } else {
-             // IMMEDIATE CHECK: If email matches super admin pattern, GRANT ADMIN NOW.
              const emailPrefix = user.email?.split('@')[0].toUpperCase();
              if (emailPrefix === SUPER_ADMIN_ID) {
                  setUserRole(ROLES.ADMIN);
                  console.log("Super Admin detected via Auth State");
              } else {
-                 // Default to PENDING to prevent leak before role check finishes
                  setUserRole(ROLES.PENDING); 
              }
         }
@@ -1193,21 +1208,16 @@ const MainApp = () => {
         setUserId(null);
         setUserRole(ROLES.GUEST);
         signInAnonymously(auth).catch(console.error);
-        
-        // Force redirect to targets on logout to avoid permission error view
         setCurrentTab('targets');
       }
     });
   }, [auth]);
 
-  // Role Listener - Force create doc if missing & enforce Super Admin
   useEffect(() => {
     if (!db || !userId) return;
     if (auth.currentUser?.isAnonymous) return;
 
     return onSnapshot(getUserRoleRef(db, userId), (doc) => {
-      // 判斷是否為超級管理員 (00095)
-      // 邏輯增強：同時檢查 DisplayName 和 Email 前綴，避免因 DisplayName 遺失導致權限錯誤
       const userEmail = auth.currentUser?.email || '';
       const emailPrefix = userEmail.split('@')[0].toUpperCase();
       const displayName = (auth.currentUser?.displayName || '').toUpperCase();
@@ -1215,14 +1225,11 @@ const MainApp = () => {
       
       const isSuperAdmin = displayName === SUPER_ADMIN_ID || emailPrefix === SUPER_ADMIN_ID || dbEmployeeId === SUPER_ADMIN_ID;
 
-      // 00095 Hard Override Logic (Enforce Admin)
       if(isSuperAdmin) {
           setUserRole(ROLES.ADMIN);
-          // Self-heal: If DB says anything else, fix it silently
           if(doc.exists() && doc.data().role !== ROLES.ADMIN) {
                setDoc(getUserRoleRef(db, userId), { role: ROLES.ADMIN }, {merge: true});
           }
-          // Self-heal: Ensure Display Name is set if missing
           if (auth.currentUser && !auth.currentUser.displayName) {
                updateProfile(auth.currentUser, { displayName: SUPER_ADMIN_ID }).catch(console.error);
           }
@@ -1232,7 +1239,6 @@ const MainApp = () => {
       if (doc.exists()) {
           setUserRole(doc.data().role || ROLES.PENDING);
       } else {
-          // If logged in but no role doc, create PENDING
           setDoc(getUserRoleRef(db, userId), {
               employeeId: auth.currentUser.displayName || 'UNKNOWN',
               role: ROLES.PENDING,
@@ -1245,22 +1251,19 @@ const MainApp = () => {
     }, (error) => console.log("Role listener info:", error.message)); 
   }, [db, userId, auth]);
 
-  // Data Listener (Units & Settings)
   useEffect(() => {
-    if (!db || !userId) return; // Added guard
+    if (!db || !userId) return;
 
     const unsubUnits = onSnapshot(getUnitCollectionRef(db), (snap) => {
       setAppData(p => ({ ...p, units: snap.docs.map(d => ({ id: d.id, ...d.data() })) }));
     }, (error) => console.log("Units listener info:", error.message));
 
-    // Use setDoc merge to ensure doc exists without overwriting
     const settingsRef = getSettingsDocRef(db);
     const unsubSettings = onSnapshot(settingsRef, (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
         setAppData(p => ({ ...p, settings: { ...initialSettings, ...data }, schedules: data.schedules || [], meetings: data.meetings || [] }));
       } else {
-        // Initialize if missing, but only if authenticated
         if (userId) {
             setDoc(settingsRef, { ...initialSettings, schedules: [], meetings: [] }, { merge: true }).catch(console.error);
         }
@@ -1269,7 +1272,6 @@ const MainApp = () => {
     return () => { unsubUnits(); unsubSettings(); };
   }, [db, userId]);
   
-  // Sync form data when editingUnitId changes
   useEffect(() => {
      if (editingUnitId) {
         const unit = appData.units.find(u => u.id === editingUnitId);
@@ -1300,7 +1302,6 @@ const MainApp = () => {
   };
 
   const addDocWrapper = async (ref, data) => {
-      // Stringify arrays before saving
       const dataToSave = {...data};
       if(Array.isArray(data.equipment)) dataToSave.equipment = safeStringify(data.equipment);
       if(Array.isArray(data.history)) dataToSave.history = safeStringify(data.history);
@@ -1327,9 +1328,7 @@ const MainApp = () => {
       
       if(emailPrefix === SUPER_ADMIN_ID) {
           try {
-              // Force update DB
               await setDoc(getUserRoleRef(db, auth.currentUser.uid), { role: ROLES.ADMIN, employeeId: SUPER_ADMIN_ID }, {merge: true});
-              // Force local state
               setUserRole(ROLES.ADMIN);
               setGlobalMessage({ text: '身分驗證成功，已切換至管理員模式', type: 'success' });
           } catch(e) {
@@ -1397,7 +1396,6 @@ const MainApp = () => {
        )
     }
 
-    // Permission check for sensitive tabs
     if ((currentTab === 'admin' || currentTab === 'settings') && (userRole !== ROLES.PROJECT_LEAD && userRole !== ROLES.ADMIN)) {
         return <div className="p-8 text-center text-red-500 bg-red-50 rounded-xl m-6">權限不足</div>;
     }
@@ -1444,7 +1442,6 @@ const MainApp = () => {
   );
 };
 
-// Wrap App in ErrorBoundary at the root level
 const App = () => {
     return (
         <ErrorBoundary>
