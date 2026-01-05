@@ -22,7 +22,8 @@ import {
   orderBy,
   query,
   getDocs,
-  limit
+  limit,
+  getDoc // Added getDoc
 } from 'firebase/firestore';
 import {
   ChevronRight,
@@ -93,7 +94,6 @@ const USER_PROVIDED_CONFIG = {
 };
 
 // Robust config retrieval
-// Fix: Use hardcoded config if environment config is missing
 const getFirebaseConfig = () => {
   try {
     if (typeof __firebase_config !== 'undefined' && __firebase_config) {
@@ -101,7 +101,7 @@ const getFirebaseConfig = () => {
     }
     return USER_PROVIDED_CONFIG;
   } catch (e) {
-    console.warn("No valid firebase config found in environment, using hardcoded config.");
+    console.warn("No valid firebase config found, using hardcoded config.");
     return USER_PROVIDED_CONFIG;
   }
 };
@@ -293,45 +293,6 @@ class ErrorBoundary extends React.Component {
 // Level 3: Feature Components
 // ==========================================
 
-const ConfigModal = ({ onSave }) => {
-  // This component is kept for fallback but should not be shown if USER_PROVIDED_CONFIG works
-  const [configStr, setConfigStr] = useState('');
-  const [error, setError] = useState('');
-
-  const handleSave = () => {
-    try {
-      let jsonStr = configStr;
-      const match = configStr.match(/{[\s\S]*}/);
-      if (match) {
-        jsonStr = match[0];
-      }
-      
-      const config = JSON.parse(jsonStr);
-      if (!config.apiKey || !config.projectId) throw new Error("缺少必要欄位 (apiKey, projectId)");
-      onSave(config);
-    } catch (e) {
-      setError("格式錯誤: " + e.message);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-900 text-white p-4">
-      <div className="bg-slate-800 p-8 rounded-2xl shadow-2xl w-full max-w-2xl border border-slate-700">
-        <h2 className="text-2xl font-bold mb-4 flex items-center text-indigo-400"><Settings className="mr-2" /> 系統初始化</h2>
-        <p className="text-slate-400 mb-4">偵測到 Firebase 設定缺失。請輸入設定檔。</p>
-        <textarea
-          value={configStr}
-          onChange={(e) => setConfigStr(e.target.value)}
-          className="w-full h-64 bg-slate-900 border border-slate-700 rounded-lg p-4 font-mono text-sm text-green-400 mb-4 focus:ring-2 focus:ring-indigo-500 outline-none"
-          placeholder="{ ... }"
-        />
-        {error && <p className="text-rose-400 mb-4 text-sm">{error}</p>}
-        <button onClick={handleSave} className="w-full bg-indigo-600 hover:bg-indigo-700 py-3 rounded-lg font-bold transition">儲存設定並啟動</button>
-      </div>
-    </div>
-  );
-};
-
 const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db, userId }) => {
   const [isRegistering, setIsRegistering] = useState(false);
   const [empId, setEmpId] = useState('');
@@ -349,15 +310,13 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db, userId }) => 
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
         const user = userCredential.user;
         
+        // Simplified Logic: Just set as VISITOR initially to ensure data creation succeeds
+        // The user can change role in Admin panel later or via direct DB edit if needed.
         if (db) {
-            const usersSnapshot = await getDocs(query(getAllUsersRef(db), limit(1)));
-            const isFirstUser = usersSnapshot.empty;
-            const role = isFirstUser ? ROLES.ADMIN : ROLES.VISITOR;
-            
             await setDoc(getUserRoleRef(db, user.uid), {
-              employeeId: empId, role, email, createdAt: new Date().toISOString()
+              employeeId: empId, role: ROLES.VISITOR, email, createdAt: new Date().toISOString()
             });
-            setGlobalMessage({ text: isFirstUser ? '註冊成功！您是第一位使用者，已自動取得管理員權限。' : '註冊成功！請等待管理員核准權限。', type: 'success' });
+            setGlobalMessage({ text: '註冊成功！預設為業務人員權限。', type: 'success' });
         }
       } else {
         await signInWithEmailAndPassword(auth, email, password);
@@ -370,7 +329,7 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db, userId }) => 
       if (error.code === 'auth/invalid-email') msg = '工號格式錯誤';
       if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password' || error.code === "auth/invalid-credential") msg = '工號或密碼錯誤';
       if (error.code === 'auth/email-already-in-use') msg = '此工號已註冊';
-      if (error.code === 'auth/operation-not-allowed') msg = '錯誤：未在 Firebase Console 啟用「電子郵件/密碼」登入功能。請至 Authentication > Sign-in method 開啟。';
+      if (error.code === 'auth/operation-not-allowed') msg = '錯誤：未在 Firebase Console 啟用登入功能。請至 Authentication > Sign-in method 開啟 Email/Password。';
       setGlobalMessage({ text: msg, type: 'error' });
     } finally {
       setIsLoading(false);
@@ -382,7 +341,7 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db, userId }) => 
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-8 relative">
         <button onClick={onClose} className="absolute top-4 right-4 text-slate-400 hover:text-slate-600"><X className="w-6 h-6" /></button>
         <h2 className="text-2xl font-bold text-slate-800 mb-2 flex items-center justify-center"><Shield className="w-6 h-6 mr-2 text-indigo-600" />{isRegistering ? '註冊新帳號' : '員工登入'}</h2>
-        <p className="text-center text-slate-500 mb-6 text-sm">{isRegistering ? '首位註冊者將自動成為管理員' : '請使用您的工號與密碼登入'}</p>
+        <p className="text-center text-slate-500 mb-6 text-sm">{isRegistering ? '註冊後預設為業務人員權限' : '請使用您的工號與密碼登入'}</p>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">工號</label>
@@ -876,7 +835,12 @@ const MainApp = () => {
     if (!db || !userId) return;
     if (auth.currentUser?.isAnonymous) return;
     return onSnapshot(getUserRoleRef(db, userId), (doc) => {
-      if (doc.exists()) setUserRole(doc.data().role || ROLES.VISITOR);
+      if (doc.exists()) {
+          setUserRole(doc.data().role || ROLES.VISITOR);
+      } else {
+          // If logged in but no role doc, force VISITOR to prevent GUEST state
+          setUserRole(ROLES.VISITOR);
+      }
     }, (error) => console.log("Role listener info:", error.message)); 
   }, [db, userId]);
 
