@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { initializeApp } from 'firebase/app';
 import {
   getAuth,
@@ -40,10 +40,11 @@ import {
   Target,
   FileSpreadsheet,
   Info,
-  Image as ImageIcon
+  Image as ImageIcon,
+  UploadCloud
 } from 'lucide-react';
 
-// --- Global Firebase Configuration ---
+// --- 1. Global Firebase Configuration ---
 
 const getAppId = () => {
   if (typeof __app_id !== 'undefined') return __app_id;
@@ -60,7 +61,7 @@ const firebaseConfig =
 const initialAuthToken =
   typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
-// --- Helpers ---
+// --- 2. Helpers ---
 
 const safeStringify = (data) => JSON.stringify(data);
 const safeParse = (data) => {
@@ -102,7 +103,7 @@ const compressImage = (file, maxWidth = 2500, quality = 0.85) => {
   });
 };
 
-// --- Firestore Helpers (Moved out of component) ---
+// --- Firestore Helpers ---
 const getUnitCollectionRef = (database, uid) => {
   if (!uid) return null;
   return collection(database, 'artifacts', appId, 'users', uid, 'units');
@@ -167,7 +168,7 @@ const initialSettings = {
   areaMap: [],
 };
 
-// --- Custom Hooks ---
+// --- 3. Custom Hooks ---
 const useExcelExport = () => {
   useEffect(() => {
     if (typeof window.XLSX === 'undefined') {
@@ -240,7 +241,7 @@ const useExcelExport = () => {
   return exportToExcel;
 };
 
-// --- GLOBAL UI COMPONENTS ---
+// --- 4. GLOBAL UI COMPONENTS ---
 
 const StatusCard = ({ title, value, icon, gradient }) => (
   <div
@@ -958,7 +959,7 @@ const UnitRecordView = ({
   );
 };
 
-// --- Extracted Tab Components ---
+// --- 5. Tab Components (Must be defined BEFORE App) ---
 
 const Tab1Calendar = ({ appData, updatePrivateData, exportToExcel }) => {
   const totalUnits = appData.units.length;
@@ -1536,6 +1537,9 @@ const Tab1Calendar = ({ appData, updatePrivateData, exportToExcel }) => {
     );
   };
 
+  const [editingScheduleId, setEditingScheduleId] = useState(null);
+  const [editingMeetingId, setEditingMeetingId] = useState(null);
+
   return (
     <div className="space-y-8 p-6 max-w-7xl mx-auto">
       <div className="flex items-center space-x-3 mb-6">
@@ -2024,6 +2028,9 @@ const Tab3TargetsMap = ({
   });
   const [mapImageUrl, setMapImageUrl] = useState(null);
   const [isMapLoading, setIsMapLoading] = useState(false);
+  
+  // NEW: Upload Progress State
+  const [uploadProgress, setUploadProgress] = useState(0);
 
   // Map Listeners
   useEffect(() => {
@@ -2137,9 +2144,16 @@ const Tab3TargetsMap = ({
     }
 
     try {
-      setGlobalMessage({ text: '正在處理高解析度圖片...', type: 'success' });
+      setUploadProgress(10); // Start processing
+      setGlobalMessage({ text: '正在處理圖片...', type: 'info' });
+
+      // Simulate step
+      setTimeout(() => setUploadProgress(30), 500);
+
       const compressedBase64 = await compressImage(file, 2500, 0.85);
       
+      setUploadProgress(50); // Compression done
+
       const CHUNK_SIZE = 800 * 1024;
       const totalLength = compressedBase64.length;
       const chunkCount = Math.ceil(totalLength / CHUNK_SIZE);
@@ -2151,7 +2165,8 @@ const Tab3TargetsMap = ({
         chunks.push(compressedBase64.substring(start, end));
       }
 
-      setGlobalMessage({ text: `正在上傳 ${chunkCount} 個圖塊...`, type: 'success' });
+      setGlobalMessage({ text: `準備上傳 ${chunkCount} 個區塊...`, type: 'info' });
+      setUploadProgress(70); // Ready to upload chunks
 
       const mapRef = getMapChunksRef(db, userId);
       const batch = writeBatch(db);
@@ -2166,12 +2181,20 @@ const Tab3TargetsMap = ({
         batch.set(docRef, { index, data: chunk });
       });
 
+      setUploadProgress(85); // Sending to Firestore
+
       await batch.commit();
+      
+      setUploadProgress(100); // Complete
       setGlobalMessage({ text: '地圖更新成功！', type: 'success' });
+      
+      // Reset progress after a short delay
+      setTimeout(() => setUploadProgress(0), 1500);
 
     } catch (error) {
       console.error("Map upload error:", error);
-      setGlobalMessage({ text: '上傳失敗', type: 'error' });
+      setUploadProgress(0);
+      setGlobalMessage({ text: '上傳失敗: ' + error.message, type: 'error' });
       alert("上傳過程發生錯誤，請重試。");
     }
   };
@@ -2235,6 +2258,7 @@ const Tab3TargetsMap = ({
         </h2>
       </div>
 
+      {/* 狀態卡 */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
         <StatusCard
           title="總家數"
@@ -2262,6 +2286,7 @@ const Tab3TargetsMap = ({
         />
       </div>
 
+      {/* 單位分佈 */}
       <div className="bg-white p-6 rounded-2xl shadow-lg border border-slate-100 flex flex-col md:flex-row gap-8 items-center justify-around bg-gradient-to-br from-white to-indigo-50/30">
         <div className="text-center w-full md:w-1/3 p-4 bg-orange-50 rounded-xl border border-orange-100">
           <p className="font-bold text-xl text-orange-600 mb-2">行政單位</p>
@@ -2285,7 +2310,27 @@ const Tab3TargetsMap = ({
         </div>
       </div>
 
-      <div className="bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-100">
+      {/* 地圖戰情室 */}
+      <div className="bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-100 relative">
+        {/* Upload Progress Overlay */}
+        {uploadProgress > 0 && (
+          <div className="absolute inset-0 z-50 bg-white/90 flex flex-col items-center justify-center p-8 backdrop-blur-sm">
+            <Loader className="w-12 h-12 text-indigo-600 animate-spin mb-4" />
+            <h3 className="text-xl font-bold text-slate-800 mb-2">正在上傳地圖... {uploadProgress}%</h3>
+            <div className="w-full max-w-md bg-gray-200 rounded-full h-2.5 mb-2">
+              <div 
+                className="bg-indigo-600 h-2.5 rounded-full transition-all duration-300 ease-in-out" 
+                style={{ width: `${uploadProgress}%` }}
+              ></div>
+            </div>
+            <p className="text-sm text-slate-500">
+              {uploadProgress < 40 ? "正在壓縮圖片..." : 
+               uploadProgress < 70 ? "正在準備上傳區塊..." : 
+               uploadProgress < 100 ? "正在寫入資料庫..." : "完成！"}
+            </p>
+          </div>
+        )}
+
         <div className="p-5 bg-slate-800 text-white flex justify-between items-center">
           <h3 className="text-xl font-bold flex items-center">
             <MapPin className="w-5 h-5 mr-2" /> 校園地圖戰情室
@@ -2329,8 +2374,8 @@ const Tab3TargetsMap = ({
                 className="hidden"
                 onChange={(e) => uploadMapAsChunks(e.target.files[0])}
               />
-              {isMapLoading ? <Loader className="w-4 h-4 mr-1 animate-spin"/> : <ImageIcon className="w-4 h-4 mr-1" />} 
-              {isMapLoading ? "載入中..." : "更換高畫質地圖"}
+              <UploadCloud className="w-4 h-4 mr-1" />
+              上傳地圖
             </label>
           </div>
         </div>
@@ -2354,8 +2399,17 @@ const Tab3TargetsMap = ({
             ></div>
           ) : (
             <div className="flex flex-col items-center justify-center w-full h-full text-slate-400">
-              <ImageIcon className="w-16 h-16 mb-2 opacity-20" />
-              <p>請上傳校園地圖 (支援高解析度)</p>
+              {isMapLoading ? (
+                <>
+                  <Loader className="w-16 h-16 mb-4 animate-spin text-indigo-400" />
+                  <p>正在載入地圖...</p>
+                </>
+              ) : (
+                <>
+                  <ImageIcon className="w-16 h-16 mb-2 opacity-20" />
+                  <p>請上傳校園地圖 (支援高解析度)</p>
+                </>
+              )}
             </div>
           )}
 
@@ -2974,7 +3028,7 @@ const Tab5Settings = ({ appData, updatePrivateData }) => {
   );
 };
 
-// --- Main App Component ---
+// --- 6. Main App Component (DEFINED LAST) ---
 
 const App = () => {
   const [currentTab, setCurrentTab] = useState('targets');
@@ -3144,6 +3198,10 @@ const App = () => {
     }
   };
 
+  const addDocWrapper = async (ref, data) => {
+      return await addDoc(ref, data);
+  }
+
   const deleteUnits = async (ids) => {
     if (!db || !userId) return;
     try {
@@ -3207,7 +3265,7 @@ const App = () => {
           <Tab4Record
             appData={appData}
             updateUnit={updateUnit}
-            addDoc={addDoc}
+            addDoc={addDocWrapper}
             db={db}
             userId={userId}
             exportToExcel={exportToExcel}
