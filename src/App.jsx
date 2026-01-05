@@ -78,9 +78,9 @@ const getAppId = () => {
   return 'ntu-strategy-default-app';
 };
 const rawAppId = getAppId();
-// Ensure appId is safe for paths
 const appId = String(rawAppId).replace(/[^a-zA-Z0-9_-]/g, '_');
 const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
 // Initial Data Structure
 const initialSettings = {
@@ -117,12 +117,14 @@ const styles = {
 };
 
 // ==========================================
-// Level 1: Helpers
+// Level 1: Helpers & Hooks
 // ==========================================
 
 const safeStringify = (data) => JSON.stringify(data);
 const safeParse = (data) => {
-  try { return JSON.parse(data); } catch (e) { return data; }
+  if (data === null || data === undefined) return [];
+  if (typeof data !== 'string') return data;
+  try { return JSON.parse(data); } catch (e) { return []; }
 };
 
 const compressImage = (file, maxWidth = 2500, quality = 0.85) => {
@@ -200,20 +202,10 @@ const useExcelExport = () => {
 };
 
 // --- Firestore Reference Helpers (Fixed Paths) ---
-
-// Collection: artifacts/{appId}/public/data/units (5 segments, odd -> Correct for Collection)
 const getUnitCollectionRef = (database) => collection(database, 'artifacts', appId, 'public', 'data', 'units');
-
-// Document: artifacts/{appId}/public/data/settings/config (6 segments, even -> Correct for Document)
 const getSettingsDocRef = (database) => doc(database, 'artifacts', appId, 'public', 'data', 'settings', 'config');
-
-// Collection: artifacts/{appId}/public/data/map_chunks (5 segments, odd -> Correct for Collection)
 const getMapChunksRef = (database) => collection(database, 'artifacts', appId, 'public', 'data', 'map_chunks');
-
-// Document: artifacts/{appId}/public/data/users/{uid} (6 segments, even -> Correct for Document)
 const getUserRoleRef = (database, uid) => doc(database, 'artifacts', appId, 'public', 'data', 'users', uid);
-
-// Collection: artifacts/{appId}/public/data/users (5 segments, odd -> Correct for Collection)
 const getAllUsersRef = (database) => collection(database, 'artifacts', appId, 'public', 'data', 'users');
 
 // ==========================================
@@ -289,16 +281,10 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db, userId }) => 
     const email = `${empId}${DOMAIN_SUFFIX}`;
     try {
       if (isRegistering) {
-        // Need to create user and THEN check logic.
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
         const user = userCredential.user;
-        
         if (db) {
-            // Check if this is the first user EVER in the system
             const usersSnapshot = await getDocs(query(getAllUsersRef(db), limit(1)));
-            // Note: usersSnapshot might contain the user we just created if the listener fired fast,
-            // but createUserWithEmailAndPassword doesn't create the Firestore doc. 
-            // So getDocs will be empty if it's the first doc we are about to create.
             const isFirstUser = usersSnapshot.empty;
             const role = isFirstUser ? ROLES.ADMIN : ROLES.VISITOR;
             
@@ -496,7 +482,7 @@ const UnitRecordView = ({ newUnitData, setNewUnitData, handleSaveUnit, handleAdd
   const { equipment, characteristics, history } = newUnitData;
   const [equipmentSearch, setEquipmentSearch] = useState({ brand: '', model: '' });
   
-  // Guard against undefined data
+  // Guard against undefined data (prevent white screen)
   const equipmentDB = appData.settings?.equipmentDB || [];
   const buildings = appData.settings?.buildings || [];
   const areaMap = appData.settings?.areaMap || [];
@@ -601,7 +587,8 @@ const Tab3TargetsMap = ({ appData, updatePrivateData, deleteUnits, exportToExcel
 
   const filteredUnits = useMemo(() => {
     return units.filter((unit) => {
-      const equipmentJson = safeParse(unit.equipment);
+      let equipmentJson = safeParse(unit.equipment);
+      if (!Array.isArray(equipmentJson)) equipmentJson = []; // Safety check
       const hasMatchingEquipment = filter.brand || filter.model ? equipmentJson.some((eq) => (filter.brand === '' || eq.brand.includes(filter.brand)) && (filter.model === '' || eq.model.includes(filter.model))) : true;
       return (filter.id === '' || unit.id.includes(filter.id)) && (filter.type === '' || unit.category === filter.type) && (filter.name === '' || unit.name.includes(filter.name)) && (filter.contact === '' || unit.contactName.includes(filter.contact)) && hasMatchingEquipment;
     });
@@ -863,9 +850,20 @@ const App = () => {
 
   const renderTabContent = () => {
     if (editingUnitId || isNewUnit) {
+       // Logic to find current unit data
+       const currentUnit = editingUnitId ? appData.units.find(u => u.id === editingUnitId) : {
+          name: '', category: 'Academic', subgroup: '', buildingId: '', attackStatus: 'engaged', contactName: '', contactPhone: '', areaCode: '', equipment: [], characteristics: [], history: []
+       };
+       // Parse JSON strings back to arrays for the view
+       const parsedUnit = {
+          ...currentUnit,
+          equipment: typeof currentUnit.equipment === 'string' ? safeParse(currentUnit.equipment) : (currentUnit.equipment || []),
+          history: typeof currentUnit.history === 'string' ? safeParse(currentUnit.history) : (currentUnit.history || [])
+       };
+
        return (
           <UnitRecordView 
-             newUnitData={newUnitData}
+             newUnitData={newUnitData} // Use state passed down
              setNewUnitData={setNewUnitData}
              key={editingUnitId || 'new'}
              isNewUnit={isNewUnit}
@@ -885,7 +883,7 @@ const App = () => {
                     setGlobalMessage({ text: '儲存成功！', type: 'success' });
                  } catch (e) {
                     console.error(e);
-                    alert("儲存失敗");
+                    alert("儲存失敗: " + e.message);
                  }
              }} 
              handleAddHistory={(newLog) => {
