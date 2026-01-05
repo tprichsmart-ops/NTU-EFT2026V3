@@ -23,7 +23,8 @@ import {
   query,
   getDocs,
   limit,
-  getDoc
+  getDoc,
+  where // Added 'where' for query filtering
 } from 'firebase/firestore';
 import {
   ChevronRight,
@@ -101,6 +102,7 @@ const getFirebaseConfig = () => {
     }
     return USER_PROVIDED_CONFIG;
   } catch (e) {
+    console.warn("No valid firebase config found in environment, using hardcoded config.");
     return USER_PROVIDED_CONFIG;
   }
 };
@@ -292,7 +294,7 @@ class ErrorBoundary extends React.Component {
 // Level 3: Feature Components
 // ==========================================
 
-const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db }) => {
+const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db, userId }) => {
   const [isRegistering, setIsRegistering] = useState(false);
   const [empId, setEmpId] = useState('');
   const [password, setPassword] = useState('');
@@ -306,25 +308,25 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db }) => {
     const email = `${empId}${DOMAIN_SUFFIX}`;
     try {
       if (isRegistering) {
-        // 1. Create User
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
         const user = userCredential.user;
         
-        // 2. Try to write to DB, but don't block success if it fails (background sync)
         if (db) {
-            setDoc(getUserRoleRef(db, user.uid), {
-              employeeId: empId, 
-              role: ROLES.VISITOR, 
-              email, 
-              createdAt: new Date().toISOString()
-            }).catch(err => console.error("DB write failed, will retry later:", err));
+            // Check if this is the first user EVER in the system
+            const usersSnapshot = await getDocs(query(getAllUsersRef(db), limit(1)));
+            const isFirstUser = usersSnapshot.empty;
+            const role = isFirstUser ? ROLES.ADMIN : ROLES.VISITOR;
+            
+            await setDoc(getUserRoleRef(db, user.uid), {
+              employeeId: empId, role, email, createdAt: new Date().toISOString()
+            });
+            setGlobalMessage({ text: isFirstUser ? '註冊成功！您是第一位使用者，已自動取得管理員權限。' : '註冊成功！請等待管理員核准權限。', type: 'success' });
         }
-        setGlobalMessage({ text: '註冊成功！預設為業務人員權限。', type: 'success' });
       } else {
         await signInWithEmailAndPassword(auth, email, password);
         setGlobalMessage({ text: '登入成功！', type: 'success' });
       }
-      onClose(); // Close modal immediately on success
+      onClose();
     } catch (error) {
       console.error(error);
       let msg = error.message;
@@ -343,7 +345,7 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db }) => {
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-8 relative">
         <button onClick={onClose} className="absolute top-4 right-4 text-slate-400 hover:text-slate-600"><X className="w-6 h-6" /></button>
         <h2 className="text-2xl font-bold text-slate-800 mb-2 flex items-center justify-center"><Shield className="w-6 h-6 mr-2 text-indigo-600" />{isRegistering ? '註冊新帳號' : '員工登入'}</h2>
-        <p className="text-center text-slate-500 mb-6 text-sm">{isRegistering ? '註冊後預設為業務人員權限' : '請使用您的工號與密碼登入'}</p>
+        <p className="text-center text-slate-500 mb-6 text-sm">{isRegistering ? '首位註冊者將自動成為管理員' : '請使用您的工號與密碼登入'}</p>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">工號</label>
