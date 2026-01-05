@@ -46,7 +46,6 @@ import {
   Building,
   Target,
   Info,
-  UploadCloud,
   RefreshCw,
   LogIn,
   LogOut,
@@ -320,18 +319,17 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db }) => {
     
     try {
       if (isRegistering) {
-        // 1. Create User (Authentication) - 這是最關鍵的一步，成功代表帳號已存在
+        // 1. Create User (Authentication)
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
         const user = userCredential.user;
         
-        // 2. Set Display Name
-        await updateProfile(user, { displayName: empId });
+        // 2. Fire and Forget DB Write (Critical Fix for Spinning)
+        // We do NOT await this. We let it run in background.
+        // We prioritize closing the modal so user can enter.
+        updateProfile(user, { displayName: empId }).catch(console.warn);
 
-        // 3. Determine Role
         const initialRole = empId === SUPER_ADMIN_ID ? ROLES.ADMIN : ROLES.PENDING;
-
-        // 4. Attempt DB write with Timeout Protection (容錯機制)
-        // 如果 DB 寫入卡住超過 2.5 秒，我們就直接略過，讓背景監聽器去補資料，避免 UI 卡死
+        
         if (db) {
             const userDocData = {
               employeeId: empId, 
@@ -339,32 +337,20 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db }) => {
               email, 
               createdAt: new Date().toISOString()
             };
-
-            const writePromise = setDoc(getUserRoleRef(db, user.uid), userDocData);
-            const timeoutPromise = new Promise((_, reject) => 
-                setTimeout(() => reject(new Error("DB Write Timeout")), 2500)
-            );
-
-            try {
-                await Promise.race([writePromise, timeoutPromise]);
-                // 如果成功寫入
-                if (initialRole === ROLES.PENDING) {
-                    setGlobalMessage({ text: '註冊成功！請等待 00095 管理員審核權限。', type: 'info' });
-                } else {
-                    setGlobalMessage({ text: '管理員註冊成功！', type: 'success' });
-                }
-            } catch (dbError) {
-                console.warn("Database write slow or failed, falling back to background sync:", dbError);
-                // 即使 DB 寫入失敗，因為 Auth 已經成功，我們還是視為成功登入
-                // 讓 MainApp 的 Role Listener 去自動修復資料
-                setGlobalMessage({ text: '註冊成功 (資料同步中...)', type: 'success' });
-            }
+            // Background write
+            setDoc(getUserRoleRef(db, user.uid), userDocData).catch(err => console.error("Background DB write failed", err));
         }
+        
+        setGlobalMessage({ text: '註冊成功！', type: 'success' });
+
       } else {
         await signInWithEmailAndPassword(auth, email, password);
         setGlobalMessage({ text: '登入成功！', type: 'success' });
       }
+      
+      // Close IMMEDIATELY after Auth success
       onClose();
+
     } catch (error) {
       console.error(error);
       let msg = error.message;
@@ -373,8 +359,7 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db }) => {
       if (error.code === 'auth/email-already-in-use') msg = '此工號已註冊，請直接登入';
       if (error.code === 'auth/operation-not-allowed') msg = '請至 Firebase Console 啟用 Email/Password 登入功能。';
       setLocalError(msg); 
-    } finally {
-      setIsLoading(false);
+      setIsLoading(false); // Only stop loading on error
     }
   };
 
@@ -612,7 +597,6 @@ const UnitRecordView = ({ newUnitData, setNewUnitData, handleSaveUnit, handleAdd
 };
 
 const Tab1Calendar = ({ appData, updatePrivateData, exportToExcel }) => {
-    // Restored Full Calendar Logic
     const { schedules = [], meetings = [] } = appData;
     const [scheduleCollapsed, setScheduleCollapsed] = useState(true);
     const [isAddingSchedule, setIsAddingSchedule] = useState(false);
@@ -930,7 +914,8 @@ const Tab3TargetsMap = ({ appData, updatePrivateData, deleteUnits, exportToExcel
                 {canEdit && (
                     <>
                        <label className="cursor-pointer bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded flex items-center">
-                          <UploadCloud className="w-4 h-4 mr-2" /> 上傳
+                          {/* Safe fallback for UploadCloud */}
+                          <span className="font-bold text-white mr-2">+</span> 上傳
                           <input type="file" className="hidden" accept="image/*" onClick={(e) => e.target.value = null} onChange={(e) => e.target.files?.[0] && uploadMapAsChunks(e.target.files[0])} />
                        </label>
                     </>
@@ -1170,6 +1155,9 @@ const MainApp = () => {
   const [editingUnitId, setEditingUnitId] = useState(null);
   const [isNewUnit, setIsNewUnit] = useState(false);
   
+  // FIX: Call the hook at the TOP LEVEL of the component
+  const exportToExcelFunc = useExcelExport();
+  
   const [newUnitData, setNewUnitData] = useState({
       name: '', category: 'Academic', subgroup: '', buildingId: '', attackStatus: 'engaged', contactName: '', contactPhone: '', areaCode: '', equipment: [], characteristics: [], history: []
   });
@@ -1402,9 +1390,9 @@ const MainApp = () => {
     
     switch (currentTab) {
       case 'targets': return <Tab3TargetsMap appData={appData} userRole={userRole} db={db} userId={userId} setGlobalMessage={setGlobalMessage} setCurrentTab={setCurrentTab} setEditingUnitId={setEditingUnitId} setIsNewUnit={setIsNewUnit} updatePrivateData={updatePrivateData} />;
-      case 'calendar': return <Tab1Calendar appData={appData} updatePrivateData={updatePrivateData} exportToExcel={useExcelExport()} />;
+      case 'calendar': return <Tab1Calendar appData={appData} updatePrivateData={updatePrivateData} exportToExcel={exportToExcelFunc} />;
       case 'guidelines': return <Tab2Guidelines appData={appData} updatePrivateData={updatePrivateData} userRole={userRole} />;
-      case 'record': return <Tab4Record appData={appData} updateUnit={updateUnit} addDoc={addDocWrapper} db={db} userId={userId} exportToExcel={useExcelExport()} setCurrentTab={setCurrentTab} selectedUnitIds={[]} setEditingUnitId={setEditingUnitId} />; 
+      case 'record': return <Tab4Record appData={appData} updateUnit={updateUnit} addDoc={addDocWrapper} db={db} userId={userId} exportToExcel={exportToExcelFunc} setCurrentTab={setCurrentTab} selectedUnitIds={[]} setEditingUnitId={setEditingUnitId} />; 
       case 'settings': return <Tab5Settings appData={appData} updatePrivateData={updatePrivateData} />;
       case 'admin': return <TabAdmin db={db} currentUserId={userId} />;
       default: return null;
