@@ -7,7 +7,8 @@ import {
   createUserWithEmailAndPassword,
   signOut,
   onAuthStateChanged,
-  updateProfile
+  updateProfile,
+  signInWithCustomToken
 } from 'firebase/auth';
 import {
   getFirestore,
@@ -63,13 +64,15 @@ import {
 // ==========================================
 
 const DOMAIN_SUFFIX = '@ntu.strategy.com';
+// 00095 為最高權限管理員
+const SUPER_ADMIN_ID = '00095';
 
 const ROLES = {
-  ADMIN: 'admin',               // 網站管理員 (00095 專用)
-  PROJECT_LEAD: 'project_lead', // 開發專案負責人
-  SALES: 'sales',               // 開發業務人員
-  PENDING: 'pending',           // 註冊待定人員
-  GUEST: 'guest'                // 未登入
+  ADMIN: 'admin',                // 網站管理員 (00095 專用)
+  PROJECT_LEAD: 'project_lead',  // 開發專案負責人
+  SALES: 'sales',                // 開發業務人員
+  PENDING: 'pending',            // 註冊待定人員
+  GUEST: 'guest'                 // 未登入
 };
 
 const ROLE_LABELS = {
@@ -133,7 +136,7 @@ const initialSettings = {
   areaMap: [],
 };
 
-// Styles
+// Styles - Using the nicer aesthetics from Version 2
 const styles = {
   formInput: "w-full px-4 py-2 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 outline-none text-slate-800",
   formSelect: "w-full px-4 py-2 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 outline-none text-slate-800",
@@ -230,7 +233,7 @@ const useExcelExport = () => {
   return exportToExcel;
 };
 
-// --- Firestore Reference Helpers (Fixed Paths) ---
+// --- Firestore Reference Helpers ---
 const getUnitCollectionRef = (database) => collection(database, 'artifacts', appId, 'public', 'data', 'units');
 const getSettingsDocRef = (database) => doc(database, 'artifacts', appId, 'public', 'data', 'settings', 'config');
 const getMapChunksRef = (database) => collection(database, 'artifacts', appId, 'public', 'data', 'map_chunks');
@@ -301,7 +304,7 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db }) => {
   const [empId, setEmpId] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [localError, setLocalError] = useState(''); 
+  const [localError, setLocalError] = useState('');
 
   // Reset fields when opening modal
   useEffect(() => {
@@ -327,25 +330,32 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db }) => {
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
         const user = userCredential.user;
         
-        // 2. Set Display Name to Employee ID (This allows us to track who it is even if DB fails)
+        // 2. Set Display Name to Employee ID
         await updateProfile(user, { displayName: empId });
 
-        // 3. Attempt DB write (Background, don't await blocking)
+        // 3. Determine Role - 00095 gets ADMIN immediately, everyone else PENDING
+        const initialRole = empId === SUPER_ADMIN_ID ? ROLES.ADMIN : ROLES.PENDING;
+
+        // 4. Attempt DB write
         if (db) {
-            setDoc(getUserRoleRef(db, user.uid), {
+            await setDoc(getUserRoleRef(db, user.uid), {
               employeeId: empId, 
-              role: ROLES.PENDING, 
+              role: initialRole, 
               email, 
               createdAt: new Date().toISOString()
-            }).catch(console.error); // Log but continue
+            });
             
-            setGlobalMessage({ text: '註冊成功！請等待管理員審核權限。', type: 'success' });
+            if (initialRole === ROLES.PENDING) {
+                setGlobalMessage({ text: '註冊成功！請等待 00095 管理員審核權限。', type: 'info' });
+            } else {
+                setGlobalMessage({ text: '管理員註冊成功！', type: 'success' });
+            }
         }
       } else {
         await signInWithEmailAndPassword(auth, email, password);
         setGlobalMessage({ text: '登入成功！', type: 'success' });
       }
-      onClose(); // Always close on success
+      onClose();
     } catch (error) {
       console.error(error);
       let msg = error.message;
@@ -364,7 +374,7 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db }) => {
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-8 relative">
         <button onClick={onClose} className="absolute top-4 right-4 text-slate-400 hover:text-slate-600"><X className="w-6 h-6" /></button>
         <h2 className="text-2xl font-bold text-slate-800 mb-2 flex items-center justify-center"><Shield className="w-6 h-6 mr-2 text-indigo-600" />{isRegistering ? '註冊新帳號' : '員工登入'}</h2>
-        <p className="text-center text-slate-500 mb-6 text-sm">{isRegistering ? '請使用工號進行註冊' : '請使用您的工號與密碼登入'}</p>
+        <p className="text-center text-slate-500 mb-6 text-sm">{isRegistering ? '請使用工號進行註冊 (預設為待定權限)' : '請使用您的工號與密碼登入'}</p>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">工號</label>
@@ -549,9 +559,8 @@ const UnitRecordView = ({ newUnitData, setNewUnitData, handleSaveUnit, handleAdd
   const availableModels = [...new Set(equipmentDB.filter((e) => e.brand === equipmentSearch.brand).map((e) => e.model))];
   
   // Permission logic
-  const canEdit = userRole === ROLES.ADMIN || userRole === ROLES.PROJECT_LEAD;
-  const canAddHistory = userRole === ROLES.SALES || userRole === ROLES.PROJECT_LEAD || userRole === ROLES.ADMIN;
-
+  const canEdit = userRole === ROLES.ADMIN || userRole === ROLES.PROJECT_LEAD || userRole === ROLES.SALES;
+  
   return (
     <div className="bg-white p-8 rounded-2xl shadow-2xl space-y-8 max-w-5xl mx-auto my-6 border border-slate-200">
       <div className="flex justify-between items-center border-b pb-6">
@@ -559,7 +568,6 @@ const UnitRecordView = ({ newUnitData, setNewUnitData, handleSaveUnit, handleAdd
         <button onClick={() => { setEditingUnitId(null); setIsNewUnit(false); }} className="text-gray-400 hover:text-gray-600"><X className="w-6 h-6" /></button>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6 relative">
-        {!canEdit && !isNewUnit && <div className="absolute inset-0 bg-slate-50/50 z-10 cursor-not-allowed"></div>}
         <InputGroup label="單位名稱 (必填)"><input type="text" value={newUnitData.name || ''} onChange={(e) => setNewUnitData((p) => ({ ...p, name: e.target.value }))} className={styles.formInput} disabled={!canEdit && !isNewUnit} /></InputGroup>
         <InputGroup label="棟別"><select value={newUnitData.buildingId || ''} onChange={(e) => setNewUnitData((p) => ({ ...p, buildingId: e.target.value }))} className={styles.formSelect} disabled={!canEdit && !isNewUnit}><option value="">選擇棟別</option>{buildings.map((b) => (<option key={b.code} value={b.code}>{b.name} ({b.code})</option>))}</select></InputGroup>
         <InputGroup label="區域編號"><select value={newUnitData.areaCode || ''} onChange={(e) => setNewUnitData((p) => ({ ...p, areaCode: e.target.value }))} className={styles.formSelect} disabled={!canEdit && !isNewUnit}><option value="">無區域</option>{areaMap.map((a) => (<option key={a.code} value={a.code}>{a.code}</option>))}</select></InputGroup>
@@ -571,7 +579,6 @@ const UnitRecordView = ({ newUnitData, setNewUnitData, handleSaveUnit, handleAdd
       </div>
       <div className="border-t border-slate-100 my-6"></div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-8 relative">
-        {!canEdit && !isNewUnit && <div className="absolute inset-0 bg-slate-50/50 z-10 cursor-not-allowed"></div>}
         <div className="bg-indigo-50/50 p-6 rounded-xl border border-indigo-100">
           <h4 className="text-lg font-bold mb-4 text-indigo-800 flex items-center"><span className="w-2 h-2 bg-indigo-500 rounded-full mr-2"></span> 設備清單</h4>
           {canEdit && <EquipmentAdder availableBrands={availableBrands} availableModels={availableModels} machineTypes={machineTypes} equipmentDB={equipmentDB} onAdd={(eq) => setNewUnitData(p => ({...p, equipment: [...p.equipment, {...eq, id: crypto.randomUUID()}]}))} equipmentSearch={equipmentSearch} setEquipmentSearch={setEquipmentSearch} />}
@@ -586,12 +593,12 @@ const UnitRecordView = ({ newUnitData, setNewUnitData, handleSaveUnit, handleAdd
       <div className="border-t border-slate-100 my-6"></div>
       <div className="bg-emerald-50/30 p-6 rounded-xl border border-emerald-100">
         <h4 className="text-lg font-bold mb-4 text-emerald-800 flex items-center"><span className="w-2 h-2 bg-emerald-500 rounded-full mr-2"></span> 記錄本次拜訪行為</h4>
-        {canAddHistory && <HistoryLogAdder onAdd={handleAddHistory} />}
+        {canEdit && <HistoryLogAdder onAdd={handleAddHistory} />}
         <HistoryLogList history={history} />
       </div>
       <div className="flex justify-end space-x-4 pt-6">
         <button onClick={() => { setEditingUnitId(null); setIsNewUnit(false); }} className="px-6 py-2.5 bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200 transition font-medium">取消</button>
-        {(canEdit || canAddHistory) && <button onClick={handleSaveUnit} className={`${styles.btnPrimary} bg-gradient-to-r from-indigo-600 to-blue-600 px-8 py-2.5`}><Save className="w-5 h-5 mr-2" /> 儲存資料</button>}
+        {canEdit && <button onClick={handleSaveUnit} className={`${styles.btnPrimary} bg-gradient-to-r from-indigo-600 to-blue-600 px-8 py-2.5`}><Save className="w-5 h-5 mr-2" /> 儲存資料</button>}
       </div>
     </div>
   );
@@ -599,14 +606,12 @@ const UnitRecordView = ({ newUnitData, setNewUnitData, handleSaveUnit, handleAdd
 
 const Tab1Calendar = ({ appData, updatePrivateData, exportToExcel }) => {
     // Restored Full Calendar Logic
-    const { schedules, meetings } = appData;
-    const [selectedScheduleIds, setSelectedScheduleIds] = useState([]);
-    const [selectedMeetingIds, setSelectedMeetingIds] = useState([]);
+    const { schedules = [], meetings = [] } = appData;
     const [scheduleCollapsed, setScheduleCollapsed] = useState(true);
     const [isAddingSchedule, setIsAddingSchedule] = useState(false);
     const [isAddingMeeting, setIsAddingMeeting] = useState(false);
-    const [editingScheduleId, setEditingScheduleId] = useState(null);
-    const [editingMeetingId, setEditingMeetingId] = useState(null);
+    const [newSchedule, setNewSchedule] = useState({ scheduleDate: '', personnel: '', memo: '', resourceContent: '', resourceAmount: 0 });
+    const [newMeeting, setNewMeeting] = useState({ date: '', attendees: '', summary: '' });
 
     const scheduleTableData = useMemo(() => {
         const now = new Date();
@@ -629,6 +634,30 @@ const Tab1Calendar = ({ appData, updatePrivateData, exportToExcel }) => {
         exportToExcel(scheduleTableData, '進攻行事曆', '排程', headers);
     };
 
+    const handleAddSchedule = () => {
+        if(!newSchedule.scheduleDate) return alert('請選擇日期');
+        const updated = [...schedules, { ...newSchedule, id: crypto.randomUUID() }];
+        updatePrivateData({ schedules: updated });
+        setNewSchedule({ scheduleDate: '', personnel: '', memo: '', resourceContent: '', resourceAmount: 0 });
+        setIsAddingSchedule(false);
+    }
+
+    const handleAddMeeting = () => {
+        if(!newMeeting.date) return alert('請選擇日期');
+        const updated = [...meetings, { ...newMeeting, id: crypto.randomUUID() }];
+        updatePrivateData({ meetings: updated });
+        setNewMeeting({ date: '', attendees: '', summary: '' });
+        setIsAddingMeeting(false);
+    }
+
+    const deleteSchedule = (id) => {
+        updatePrivateData({ schedules: schedules.filter(s => s.id !== id) });
+    }
+
+    const deleteMeeting = (id) => {
+        updatePrivateData({ meetings: meetings.filter(m => m.id !== id) });
+    }
+
     return (
         <div className="space-y-8 p-6 max-w-7xl mx-auto">
           <div className="flex items-center space-x-3 mb-6">
@@ -638,9 +667,10 @@ const Tab1Calendar = ({ appData, updatePrivateData, exportToExcel }) => {
           
            {/* Schedule Table */}
            <div className="bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-100">
-               <div className="p-6 bg-gradient-to-r from-amber-50 to-orange-50 border-b border-amber-100 flex justify-between">
-                   <h3 className="text-xl font-bold text-amber-900">進攻排程</h3>
+               <div className="p-6 bg-gradient-to-r from-amber-50 to-orange-50 border-b border-amber-100 flex justify-between items-center">
+                   <h3 className="text-xl font-bold text-amber-900 flex items-center"><span className="w-2 h-8 bg-amber-500 rounded-full mr-3"></span>進攻排程</h3>
                    <div className="space-x-2">
+                       <button onClick={() => setIsAddingSchedule(!isAddingSchedule)} className={styles.btnPrimary}><Plus size={16} className="mr-1"/>新增</button>
                        <button onClick={() => setScheduleCollapsed(!scheduleCollapsed)} className={styles.btnSecondary}>
                           {scheduleCollapsed ? <ChevronsDown size={16} className="mr-1"/> : <ChevronsUp size={16} className="mr-1"/>}
                           {scheduleCollapsed ? '展開過期' : '收合過期'}
@@ -648,7 +678,18 @@ const Tab1Calendar = ({ appData, updatePrivateData, exportToExcel }) => {
                        <button onClick={exportSchedules} className={styles.btnInfo}><Download size={16} className="mr-1"/>匯出</button>
                    </div>
                </div>
-               <div className="p-4 overflow-x-auto">
+
+               {isAddingSchedule && (
+                   <div className="p-4 bg-amber-50 border-b border-amber-100 grid grid-cols-1 md:grid-cols-5 gap-3 animate-fade-in">
+                       <input type="date" className={styles.formInput} value={newSchedule.scheduleDate} onChange={e => setNewSchedule({...newSchedule, scheduleDate: e.target.value})} />
+                       <input type="text" placeholder="人員/區域" className={styles.formInput} value={newSchedule.personnel} onChange={e => setNewSchedule({...newSchedule, personnel: e.target.value})} />
+                       <input type="text" placeholder="待辦事項" className={styles.formInput} value={newSchedule.memo} onChange={e => setNewSchedule({...newSchedule, memo: e.target.value})} />
+                       <input type="text" placeholder="資源內容" className={styles.formInput} value={newSchedule.resourceContent} onChange={e => setNewSchedule({...newSchedule, resourceContent: e.target.value})} />
+                       <button onClick={handleAddSchedule} className={styles.btnPrimary}>確認新增</button>
+                   </div>
+               )}
+
+               <div className="p-0 overflow-x-auto">
                    <table className="min-w-full divide-y divide-gray-200">
                        <thead className="bg-gray-50 text-gray-500">
                            <tr>
@@ -656,15 +697,17 @@ const Tab1Calendar = ({ appData, updatePrivateData, exportToExcel }) => {
                                <th className="p-4 text-left text-xs font-bold uppercase">人員/區域</th>
                                <th className="p-4 text-left text-xs font-bold uppercase">待辦</th>
                                <th className="p-4 text-left text-xs font-bold uppercase">資源</th>
+                               <th className="p-4 text-right text-xs font-bold uppercase">操作</th>
                            </tr>
                        </thead>
                        <tbody className="divide-y divide-gray-100">
                            {filteredSchedules.map(s => (
-                               <tr key={s.id} className={s.isExpired ? 'bg-gray-50 opacity-60' : ''}>
+                               <tr key={s.id} className={s.isExpired ? 'bg-gray-50 opacity-60' : 'hover:bg-amber-50/30'}>
                                    <td className="p-4 text-sm font-medium">{s.scheduleDate}</td>
                                    <td className="p-4 text-sm text-gray-600">{s.personnel}</td>
                                    <td className="p-4 text-sm text-gray-600">{s.memo}</td>
                                    <td className="p-4 text-sm text-gray-600">{s.resourceContent}</td>
+                                   <td className="p-4 text-right"><button onClick={() => deleteSchedule(s.id)} className="text-gray-400 hover:text-red-500"><Trash2 size={16}/></button></td>
                                </tr>
                            ))}
                        </tbody>
@@ -675,24 +718,37 @@ const Tab1Calendar = ({ appData, updatePrivateData, exportToExcel }) => {
 
            {/* Meeting Table */}
            <div className="bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-100">
-                <div className="p-6 bg-gradient-to-r from-blue-50 to-indigo-50 border-b border-blue-100 flex justify-between">
-                     <h3 className="text-xl font-bold text-blue-900">會議紀錄</h3>
+                <div className="p-6 bg-gradient-to-r from-blue-50 to-indigo-50 border-b border-blue-100 flex justify-between items-center">
+                     <h3 className="text-xl font-bold text-blue-900 flex items-center"><span className="w-2 h-8 bg-blue-600 rounded-full mr-3"></span>會議紀錄</h3>
+                     <button onClick={() => setIsAddingMeeting(!isAddingMeeting)} className={styles.btnPrimary}><Plus size={16} className="mr-1"/>新增</button>
                 </div>
-                <div className="p-4 overflow-x-auto">
+
+                {isAddingMeeting && (
+                   <div className="p-4 bg-blue-50 border-b border-blue-100 grid grid-cols-1 md:grid-cols-4 gap-3 animate-fade-in">
+                       <input type="date" className={styles.formInput} value={newMeeting.date} onChange={e => setNewMeeting({...newMeeting, date: e.target.value})} />
+                       <input type="text" placeholder="與會人員" className={styles.formInput} value={newMeeting.attendees} onChange={e => setNewMeeting({...newMeeting, attendees: e.target.value})} />
+                       <input type="text" placeholder="會議總結" className={styles.formInput} value={newMeeting.summary} onChange={e => setNewMeeting({...newMeeting, summary: e.target.value})} />
+                       <button onClick={handleAddMeeting} className={styles.btnPrimary}>確認新增</button>
+                   </div>
+               )}
+
+                <div className="p-0 overflow-x-auto">
                     <table className="min-w-full divide-y divide-gray-200">
                         <thead className="bg-gray-50 text-gray-500">
                            <tr>
                                <th className="p-4 text-left text-xs font-bold uppercase">日期</th>
                                <th className="p-4 text-left text-xs font-bold uppercase">與會人員</th>
                                <th className="p-4 text-left text-xs font-bold uppercase">總結</th>
+                               <th className="p-4 text-right text-xs font-bold uppercase">操作</th>
                            </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-100">
                            {meetings.map(m => (
-                               <tr key={m.id}>
+                               <tr key={m.id} className="hover:bg-blue-50/30">
                                    <td className="p-4 text-sm font-medium">{m.date}</td>
                                    <td className="p-4 text-sm text-gray-600">{m.attendees}</td>
                                    <td className="p-4 text-sm text-gray-600">{m.summary}</td>
+                                   <td className="p-4 text-right"><button onClick={() => deleteMeeting(m.id)} className="text-gray-400 hover:text-red-500"><Trash2 size={16}/></button></td>
                                </tr>
                            ))}
                         </tbody>
@@ -704,22 +760,55 @@ const Tab1Calendar = ({ appData, updatePrivateData, exportToExcel }) => {
     );
 };
 
-const Tab2Guidelines = ({ appData }) => {
-  // CRITICAL FIX: Safe access to prevent crash on initial load
+const Tab2Guidelines = ({ appData, updatePrivateData }) => {
   const guidelines = appData.settings?.guidelines || [];
   const talkScripts = appData.settings?.talkScripts || [];
+  const [editingId, setEditingId] = useState(null);
+
+  const handleUpdate = (field, newData) => {
+      updatePrivateData({ [field]: newData });
+      setEditingId(null);
+  }
 
   return (
     <div className="space-y-8 p-6 max-w-7xl mx-auto">
-      <div className="flex items-center space-x-3 mb-6"><Target className="w-8 h-8 text-indigo-600" /><h2 className="text-3xl font-extrabold text-slate-800">攻擊準則</h2></div>
+      <div className="flex items-center space-x-3 mb-6"><Target className="w-8 h-8 text-indigo-600" /><h2 className="text-3xl font-extrabold text-slate-800">攻擊準則與話術</h2></div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-100">
-          <h3 className="font-bold text-lg mb-4 text-blue-700">核心原則</h3>
-          <ul className="list-disc pl-5 space-y-3 text-slate-700">{guidelines.map(g => <li key={g.id}><span className="font-bold">{g.title}</span>: {g.content}</li>)}</ul>
+        <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
+          <div className="p-5 bg-gradient-to-r from-blue-600 to-indigo-700 text-white"><h3 className="text-xl font-bold flex items-center"><Target className="w-5 h-5 mr-2"/>核心進攻原則</h3></div>
+          <div className="p-6 space-y-4 bg-slate-50">
+             {guidelines.map(g => (
+                 <div key={g.id} className="p-5 bg-white rounded-xl shadow-sm border-l-4 border-blue-500 relative transition hover:shadow-md">
+                    {editingId === g.id ? (
+                        <EditBlock item={g} field="guidelines" collection={guidelines} onSave={handleUpdate} onCancel={() => setEditingId(null)} />
+                    ) : (
+                        <>
+                            <h4 className="font-bold text-lg text-slate-800">{g.title}</h4>
+                            <p className="text-slate-600 mt-2">{g.content}</p>
+                            <button onClick={() => setEditingId(g.id)} className="absolute top-3 right-3 text-gray-400 hover:text-blue-500"><Edit size={16}/></button>
+                        </>
+                    )}
+                 </div>
+             ))}
+          </div>
         </div>
-        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-100">
-          <h3 className="font-bold text-lg mb-4 text-emerald-700">標準話術</h3>
-          <ul className="list-disc pl-5 space-y-3 text-slate-700">{talkScripts.map(t => <li key={t.id}><span className="font-bold">{t.title}</span>: {t.content}</li>)}</ul>
+        <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
+          <div className="p-5 bg-gradient-to-r from-emerald-600 to-teal-700 text-white"><h3 className="text-xl font-bold flex items-center"><CheckCircle className="w-5 h-5 mr-2"/>標準話術庫</h3></div>
+          <div className="p-6 space-y-4 bg-slate-50">
+             {talkScripts.map(t => (
+                 <div key={t.id} className="p-5 bg-white rounded-xl shadow-sm border-l-4 border-emerald-500 relative transition hover:shadow-md">
+                    {editingId === t.id ? (
+                        <EditBlock item={t} field="talkScripts" collection={talkScripts} onSave={handleUpdate} onCancel={() => setEditingId(null)} />
+                    ) : (
+                        <>
+                            <h4 className="font-bold text-lg text-emerald-800">{t.title}</h4>
+                            <p className="p-3 mt-3 bg-emerald-50/50 border border-emerald-100 rounded-lg text-slate-700 text-sm">{t.content}</p>
+                            <button onClick={() => setEditingId(t.id)} className="absolute top-3 right-3 text-gray-400 hover:text-emerald-500"><Edit size={16}/></button>
+                        </>
+                    )}
+                 </div>
+             ))}
+          </div>
         </div>
       </div>
     </div>
@@ -735,14 +824,16 @@ const Tab3TargetsMap = ({ appData, updatePrivateData, deleteUnits, exportToExcel
   const currentClients = units.filter((u) => u.attackStatus === 'client').length;
   const adminUnits = units.filter((u) => u.category === 'Administrative').length;
   const academicUnits = units.filter((u) => u.category === 'Academic').length;
+  
   const [filter, setFilter] = useState({ id: '', type: '', name: '', contact: '', phone: '', brand: '', model: '' });
   const [selectedUnitIds, setSelectedUnitIds] = useState([]);
   const [mapState, setMapState] = useState({ isDrawing: false, start: null, current: null, areaCodeInput: '' });
   const [mapImageUrl, setMapImageUrl] = useState(null);
   const [isMapLoading, setIsMapLoading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [isFilterCollapsed, setIsFilterCollapsed] = useState(true);
   
-  // Permission Check: Admin or Project Lead can edit
+  // Permission Check
   const canEdit = userRole === ROLES.ADMIN || userRole === ROLES.PROJECT_LEAD;
 
   const filteredUnits = useMemo(() => {
@@ -790,6 +881,24 @@ const Tab3TargetsMap = ({ appData, updatePrivateData, deleteUnits, exportToExcel
     } catch (e) { console.error(e); setUploadProgress(0); alert("上傳失敗: " + e.message); }
   };
 
+  const handleMapClick = (e) => {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const x = ((e.clientX - rect.left) / rect.width) * 100;
+      const y = ((e.clientY - rect.top) / rect.height) * 100;
+      if (!mapState.isDrawing) {
+          setMapState(p => ({ ...p, isDrawing: true, start: { x, y }, current: { x, y } }));
+      } else {
+          if (!mapState.areaCodeInput) { alert('請輸入區域編號'); return; }
+          const newArea = {
+              id: crypto.randomUUID(), code: mapState.areaCodeInput,
+              x1: Math.min(mapState.start.x, x), y1: Math.min(mapState.start.y, y),
+              x2: Math.max(mapState.start.x, x), y2: Math.max(mapState.start.y, y)
+          };
+          updatePrivateData({ areaMap: [...areaMap, newArea] });
+          setMapState({ isDrawing: false, start: null, current: null, areaCodeInput: '' });
+      }
+  };
+
   return (
     <div className="space-y-8 p-6 max-w-7xl mx-auto">
       <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
@@ -799,6 +908,7 @@ const Tab3TargetsMap = ({ appData, updatePrivateData, deleteUnits, exportToExcel
          <StatusCard title="學術單位" value={academicUnits} icon={<Users className="w-6 h-6 text-white" />} gradient="from-sky-500 to-blue-600" />
       </div>
       
+      {/* Map Section */}
       <div className="bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-100 relative">
          {uploadProgress > 0 && (
             <div className="absolute inset-0 z-50 bg-white/90 flex flex-col items-center justify-center p-8 backdrop-blur-sm">
@@ -807,27 +917,62 @@ const Tab3TargetsMap = ({ appData, updatePrivateData, deleteUnits, exportToExcel
             </div>
          )}
          <div className="p-5 bg-slate-800 text-white flex justify-between items-center">
-            <h3 className="text-xl font-bold">校園地圖</h3>
-            {canEdit && (
-               <div className="flex gap-2">
-                  <label className="cursor-pointer bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded flex items-center">
-                     <UploadCloud className="w-4 h-4 mr-2" /> 上傳地圖
-                     <input type="file" className="hidden" accept="image/*" onClick={(e) => e.target.value = null} onChange={(e) => e.target.files?.[0] && uploadMapAsChunks(e.target.files[0])} />
-                  </label>
-               </div>
-            )}
+            <h3 className="text-xl font-bold flex items-center"><MapPin className="w-5 h-5 mr-2" /> 校園地圖戰情室</h3>
+            <div className="flex gap-2 items-center">
+               <input type="text" value={mapState.areaCodeInput} onChange={e => setMapState(p => ({...p, areaCodeInput: e.target.value}))} className="w-24 px-2 py-1 rounded bg-slate-700 text-white border-none" placeholder="區域編號" disabled={!canEdit}/>
+                {canEdit && (
+                    <>
+                       <label className="cursor-pointer bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded flex items-center">
+                          <UploadCloud className="w-4 h-4 mr-2" /> 上傳
+                          <input type="file" className="hidden" accept="image/*" onClick={(e) => e.target.value = null} onChange={(e) => e.target.files?.[0] && uploadMapAsChunks(e.target.files[0])} />
+                       </label>
+                    </>
+                )}
+            </div>
          </div>
-         <div className="relative w-full aspect-[2/1] bg-slate-100">
+         <div className={`relative w-full aspect-[2/1] bg-slate-100 overflow-hidden ${canEdit ? 'cursor-crosshair' : 'cursor-default'}`} onClick={canEdit ? handleMapClick : undefined}>
             {mapImageUrl ? <img src={mapImageUrl} className="w-full h-full object-contain" /> : <div className="flex items-center justify-center h-full text-slate-400">{isMapLoading ? "載入中..." : "尚無地圖"}</div>}
+            
+            {/* Existing Areas */}
+            {areaMap.map((area) => (
+                <div key={area.id} className="absolute border-2 border-rose-500 bg-rose-500/20 group/area" style={{ left: `${area.x1}%`, top: `${area.y1}%`, width: `${area.x2 - area.x1}%`, height: `${area.y2 - area.y1}%` }}>
+                    <span className="absolute -top-6 left-0 bg-rose-600 text-white text-xs px-2 py-0.5 rounded font-bold whitespace-nowrap z-10">{area.code}</span>
+                    {canEdit && <button className="absolute -top-2 -right-2 p-1 bg-white text-rose-600 rounded-full shadow-md opacity-0 group-hover/area:opacity-100 z-20" onClick={(e) => { e.stopPropagation(); updatePrivateData({ areaMap: areaMap.filter(a => a.id !== area.id) }) }}><X className="w-3 h-3"/></button>}
+                </div>
+            ))}
+            
+            {/* Drawing State */}
+             {mapState.isDrawing && mapState.start && (
+                  <div className="absolute border-2 border-dashed border-yellow-400 bg-yellow-400/30 pointer-events-none" style={{
+                      left: `${mapState.start.x}%`, top: `${mapState.start.y}%`,
+                      width: '10px', height: '10px' // Just a visual indicator that start point is set
+                  }}></div>
+             )}
          </div>
       </div>
 
-      <div className="bg-white rounded-2xl shadow-xl border border-slate-100 p-6">
-         <div className="flex justify-between items-center mb-4">
-            <h3 className="text-xl font-bold">進攻對象</h3>
-            {canEdit && <button onClick={() => { setEditingUnitId(null); setIsNewUnit(true); setCurrentTab('record'); }} className={styles.btnPrimary}><Plus className="w-4 h-4 mr-1"/> 新增</button>}
+      {/* Target Table Section */}
+      <div className="bg-white rounded-2xl shadow-xl border border-slate-100 overflow-hidden">
+         <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-gray-50/50">
+            <h3 className="text-xl font-bold text-slate-800">進攻對象概覽 <span className="text-sm font-normal text-slate-500 ml-2">(共 {filteredUnits.length} 筆)</span></h3>
+            <div className="flex space-x-2">
+                 {canEdit && <button onClick={() => { setEditingUnitId(null); setIsNewUnit(true); setCurrentTab('record'); }} className={styles.btnPrimary}><Plus className="w-4 h-4 mr-1"/> 新增</button>}
+                 <button onClick={() => setIsFilterCollapsed(p => !p)} className="text-indigo-600 hover:text-indigo-800 text-sm flex items-center bg-indigo-50 px-3 py-1.5 rounded-lg transition">{isFilterCollapsed ? '展開篩選' : '收合篩選'}</button>
+            </div>
          </div>
-         <UnitTable units={filteredUnits} selectedUnitIds={selectedUnitIds} setSelectedUnitIds={setSelectedUnitIds} setCurrentTab={setCurrentTab} setEditingUnitId={setEditingUnitId} setIsNewUnit={setIsNewUnit} />
+         
+         <div className={`transition-all duration-300 overflow-hidden bg-slate-50 border-b border-slate-100 ${isFilterCollapsed ? 'max-h-0' : 'max-h-auto p-6'}`}>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <FilterInput label="客編/ID" value={filter.id} onChange={e => setFilter(p => ({...p, id: e.target.value}))} />
+                <FilterInput label="名稱" value={filter.name} onChange={e => setFilter(p => ({...p, name: e.target.value}))} />
+                <FilterSelect label="類型" value={filter.type} onChange={e => setFilter(p => ({...p, type: e.target.value}))}><option value="">全部</option><option value="Administrative">行政</option><option value="Academic">學術</option></FilterSelect>
+                <button onClick={() => setFilter({ id: '', type: '', name: '', contact: '', phone: '', brand: '', model: '' })} className="mt-6 text-sm text-slate-500 underline">清除篩選</button>
+            </div>
+         </div>
+
+         <div className="p-4">
+            <UnitTable units={filteredUnits} selectedUnitIds={selectedUnitIds} setSelectedUnitIds={setSelectedUnitIds} setCurrentTab={setCurrentTab} setEditingUnitId={setEditingUnitId} setIsNewUnit={setIsNewUnit} />
+         </div>
       </div>
     </div>
   );
@@ -857,6 +1002,10 @@ const Tab4Record = ({ appData, updateUnit, addDoc, db, userId, exportToExcel, se
           <option value="">全部類型</option>
           <option value="Administrative">行政</option>
           <option value="Academic">學術</option>
+        </FilterSelect>
+        <FilterSelect label="區域篩選" value={recordFilter.area} onChange={(e) => setRecordFilter((p) => ({ ...p, area: e.target.value }))}>
+            <option value="">全部區域</option>
+            {appData.settings.areaMap.map(a => <option key={a.code} value={a.code}>{a.code}</option>)}
         </FilterSelect>
         <div className="flex-grow"></div>
         <button onClick={() => setCurrentTab('targets')} className={styles.btnSecondary}>返回地圖</button>
@@ -988,7 +1137,7 @@ const TabAdmin = ({ db, currentUserId }) => {
             <tr key={u.id} className="hover:bg-slate-50">
               <td className="px-6 py-4 font-medium">{u.employeeId}</td>
               <td className="px-6 py-4"><span className={`px-2 py-1 text-xs font-semibold rounded-full ${u.role === ROLES.ADMIN || u.role === ROLES.PROJECT_LEAD ? 'bg-purple-100 text-purple-800' : u.role === ROLES.SALES ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-800'}`}>{ROLE_LABELS[u.role] || u.role}</span></td>
-              <td className="px-6 py-4">{u.id === currentUserId ? <span className="text-slate-400">自己</span> : <select value={u.role} onChange={(e) => updateUserRole(u.id, e.target.value)} className="border rounded px-2 py-1 text-sm"><option value={ROLES.SALES}>業務</option><option value={ROLES.PROJECT_LEAD}>負責人</option><option value={ROLES.PENDING}>待定</option></select>}</td>
+              <td className="px-6 py-4">{u.id === currentUserId || u.employeeId === SUPER_ADMIN_ID ? <span className="text-slate-400 cursor-not-allowed">不可變更</span> : <select value={u.role} onChange={(e) => updateUserRole(u.id, e.target.value)} className="border rounded px-2 py-1 text-sm"><option value={ROLES.SALES}>業務</option><option value={ROLES.PROJECT_LEAD}>負責人</option><option value={ROLES.PENDING}>待定</option></select>}</td>
             </tr>
           ))}</tbody>
         </table>
@@ -1023,8 +1172,6 @@ const MainApp = () => {
   useEffect(() => {
     const firebaseConfig = getFirebaseConfig();
     if (!firebaseConfig || Object.keys(firebaseConfig).length === 0) {
-        // Safe check for config existence
-        // In local dev this might be empty, we handle it by not crashing
         return;
     }
     try {
@@ -1045,11 +1192,13 @@ const MainApp = () => {
         if (user.isAnonymous) {
              setUserRole(ROLES.GUEST);
         } else {
-             // Immediate feedback: if logged in, assume visitor at least
-             // This prevents the "Not Logged In" UI flash
-             // Real role will overwrite this in milliseconds via the listener below
-             // Default to PENDING to be safe
-             setUserRole(ROLES.PENDING); 
+             // Default to PENDING to prevent leak before role check finishes
+             // UNLESS displayName is the super admin code
+             if (user.displayName === SUPER_ADMIN_ID) {
+                 setUserRole(ROLES.ADMIN);
+             } else {
+                 setUserRole(ROLES.PENDING); 
+             }
         }
       } else {
         setUserId(null);
@@ -1062,15 +1211,18 @@ const MainApp = () => {
     });
   }, [auth]);
 
-  // Role Listener - Force create doc if missing
+  // Role Listener - Force create doc if missing & enforce Super Admin
   useEffect(() => {
     if (!db || !userId) return;
     if (auth.currentUser?.isAnonymous) return;
+
     return onSnapshot(getUserRoleRef(db, userId), (doc) => {
-      // 00095 Hard Override Logic
-      if(auth.currentUser?.displayName === '00095') {
+      const isSuperAdmin = auth.currentUser?.displayName === SUPER_ADMIN_ID;
+
+      // 00095 Hard Override Logic (Enforce Admin)
+      if(isSuperAdmin) {
           setUserRole(ROLES.ADMIN);
-          // If DB says otherwise, correct it in background
+          // Self-heal: If DB says anything else, fix it silently
           if(doc.exists() && doc.data().role !== ROLES.ADMIN) {
                setDoc(getUserRoleRef(db, userId), { role: ROLES.ADMIN }, {merge: true});
           }
@@ -1080,13 +1232,9 @@ const MainApp = () => {
       if (doc.exists()) {
           setUserRole(doc.data().role || ROLES.PENDING);
       } else {
-          // If logged in but no role doc, force create it to prevent GUEST state limbo
-          // This self-healing ensures users never get stuck
-          // Check if this is 00095
-          // We can't check employeeId here easily without user input, but we can default to PENDING
-          // The LoginModal handles the 00095 logic on login/register action. 
-          // Here is just a fallback for "Ghost" users.
+          // If logged in but no role doc, create PENDING
           setDoc(getUserRoleRef(db, userId), {
+              employeeId: auth.currentUser.displayName || 'UNKNOWN',
               role: ROLES.PENDING,
               createdAt: new Date().toISOString(),
               email: auth.currentUser.email
@@ -1095,7 +1243,7 @@ const MainApp = () => {
           setUserRole(ROLES.PENDING);
       }
     }, (error) => console.log("Role listener info:", error.message)); 
-  }, [db, userId]);
+  }, [db, userId, auth]);
 
   // Data Listener (Units & Settings)
   useEffect(() => {
@@ -1110,12 +1258,11 @@ const MainApp = () => {
     const unsubSettings = onSnapshot(settingsRef, (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
-        // CRITICAL FIX: Merge with initialSettings to prevent undefined properties
-        setAppData(p => ({ ...p, settings: { ...initialSettings, ...data } }));
+        setAppData(p => ({ ...p, settings: { ...initialSettings, ...data }, schedules: data.schedules || [], meetings: data.meetings || [] }));
       } else {
-        // Initialize if missing, but only if authenticated to avoid permission error loop
+        // Initialize if missing, but only if authenticated
         if (userId) {
-            setDoc(settingsRef, initialSettings, { merge: true }).catch(console.error);
+            setDoc(settingsRef, { ...initialSettings, schedules: [], meetings: [] }, { merge: true }).catch(console.error);
         }
       }
     }, (error) => console.log("Settings listener info:", error.message));
@@ -1164,7 +1311,7 @@ const MainApp = () => {
     if (!db) return;
     try {
       const docRef = getSettingsDocRef(db);
-      await setDoc(docRef, fields, { merge: true }); // Changed to setDoc with merge
+      await setDoc(docRef, fields, { merge: true }); 
       setGlobalMessage({ text: '資料更新成功！', type: 'success' });
     } catch (e) {
       console.error('Error updating data:', e);
@@ -1175,30 +1322,24 @@ const MainApp = () => {
   const renderTabContent = () => {
     if (userRole === ROLES.PENDING) {
         return (
-            <div className="flex flex-col items-center justify-center h-96 text-slate-500">
-                <Lock className="w-16 h-16 mb-4 text-slate-300" />
-                <h2 className="text-xl font-bold text-slate-700">帳號審核中</h2>
-                <p>您的帳號目前處於「待定」狀態。</p>
-                <p>請聯繫管理員開通您的權限。</p>
+            <div className="flex flex-col items-center justify-center h-96 text-slate-500 animate-fade-in">
+                <div className="bg-white p-8 rounded-2xl shadow-xl text-center border border-slate-100 max-w-md">
+                    <div className="bg-amber-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <Lock className="w-8 h-8 text-amber-600" />
+                    </div>
+                    <h2 className="text-xl font-bold text-slate-800 mb-2">帳號審核中</h2>
+                    <p className="text-slate-600 mb-4">您的帳號目前處於「待定」狀態。</p>
+                    <p className="text-sm text-slate-400">請聯繫工號 {SUPER_ADMIN_ID} 管理員開通您的權限。</p>
+                    <button onClick={() => window.location.reload()} className="mt-6 text-indigo-600 hover:underline text-sm flex items-center justify-center w-full"><RefreshCw size={14} className="mr-1"/> 重新整理狀態</button>
+                </div>
             </div>
         );
     }
 
     if (editingUnitId || isNewUnit) {
-       // Logic to find current unit data
-       const currentUnit = editingUnitId ? appData.units.find(u => u.id === editingUnitId) : {
-          name: '', category: 'Academic', subgroup: '', buildingId: '', attackStatus: 'engaged', contactName: '', contactPhone: '', areaCode: '', equipment: [], characteristics: [], history: []
-       };
-       // Parse JSON strings back to arrays for the view
-       const parsedUnit = {
-          ...currentUnit,
-          equipment: typeof currentUnit.equipment === 'string' ? safeParse(currentUnit.equipment) : (currentUnit.equipment || []),
-          history: typeof currentUnit.history === 'string' ? safeParse(currentUnit.history) : (currentUnit.history || [])
-       };
-
        return (
           <UnitRecordView 
-             newUnitData={newUnitData} // Use state passed down
+             newUnitData={newUnitData} 
              setNewUnitData={setNewUnitData}
              key={editingUnitId || 'new'}
              isNewUnit={isNewUnit}
@@ -1234,14 +1375,14 @@ const MainApp = () => {
 
     // Permission check for sensitive tabs
     if ((currentTab === 'admin' || currentTab === 'settings') && (userRole !== ROLES.PROJECT_LEAD && userRole !== ROLES.ADMIN)) {
-        return <div className="p-8 text-center text-red-500">權限不足</div>;
+        return <div className="p-8 text-center text-red-500 bg-red-50 rounded-xl m-6">權限不足</div>;
     }
     
     switch (currentTab) {
       case 'targets': return <Tab3TargetsMap appData={appData} userRole={userRole} db={db} userId={userId} setGlobalMessage={setGlobalMessage} setCurrentTab={setCurrentTab} setEditingUnitId={setEditingUnitId} setIsNewUnit={setIsNewUnit} updatePrivateData={updatePrivateData} />;
-      case 'calendar': return <Tab1Calendar appData={appData} updatePrivateData={updatePrivateData} exportToExcel={exportToExcel} />;
+      case 'calendar': return <Tab1Calendar appData={appData} updatePrivateData={updatePrivateData} exportToExcel={useExcelExport()} />;
       case 'guidelines': return <Tab2Guidelines appData={appData} updatePrivateData={updatePrivateData} userRole={userRole} />;
-      case 'record': return <Tab4Record appData={appData} updateUnit={updateUnit} addDoc={addDocWrapper} db={db} userId={userId} exportToExcel={exportToExcel} setCurrentTab={setCurrentTab} selectedUnitIds={[]} setEditingUnitId={setEditingUnitId} />; 
+      case 'record': return <Tab4Record appData={appData} updateUnit={updateUnit} addDoc={addDocWrapper} db={db} userId={userId} exportToExcel={useExcelExport()} setCurrentTab={setCurrentTab} selectedUnitIds={[]} setEditingUnitId={setEditingUnitId} />; 
       case 'settings': return <Tab5Settings appData={appData} updatePrivateData={updatePrivateData} />;
       case 'admin': return <TabAdmin db={db} currentUserId={userId} />;
       default: return null;
@@ -1254,26 +1395,26 @@ const MainApp = () => {
     { id: 'record', label: '拜訪紀錄', icon: <Edit className="w-4 h-4" /> },
     { id: 'guidelines', label: '攻擊準則', icon: <Target className="w-4 h-4" /> },
   ];
-  // 00095 is ADMIN, also maps to PROJECT_LEAD level permissions in UI for simplicity of "High Level" access
+  
   if (userRole === ROLES.ADMIN || userRole === ROLES.PROJECT_LEAD) {
      navItems.push({ id: 'settings', label: '設定', icon: <Building className="w-4 h-4" /> });
      navItems.push({ id: 'admin', label: '人員管理', icon: <UserCog className="w-4 h-4" /> });
   }
 
   return (
-      <div className="min-h-screen bg-slate-50 font-sans text-slate-900">
+      <div className="min-h-screen bg-slate-50 font-sans text-slate-900 selection:bg-indigo-100 selection:text-indigo-800">
         <header className="sticky top-0 z-50 backdrop-blur-md bg-white/80 border-b border-slate-200 shadow-sm">
           <div className="max-w-7xl mx-auto px-4 h-16 flex justify-between items-center">
             <div className="flex items-center">
-              <div className="w-10 h-10 bg-gradient-to-br from-indigo-600 to-blue-500 rounded-xl flex items-center justify-center text-white mr-3"><Activity className="w-6 h-6"/></div>
-              <div><h1 className="text-xl font-bold">2026 台大攻略戰情室</h1><p className="text-xs text-slate-500">{userRole === ROLES.GUEST ? '訪客模式' : `${ROLE_LABELS[userRole]} - ${userId?.substring(0,6)}...`}</p></div>
+              <div className="w-10 h-10 bg-gradient-to-br from-indigo-600 to-blue-500 rounded-xl flex items-center justify-center text-white shadow-lg shadow-indigo-500/30 mr-3"><Activity className="w-6 h-6"/></div>
+              <div><h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-slate-900 to-slate-700">2026 台大攻略戰情室</h1><p className="text-xs text-slate-500 font-mono">{userRole === ROLES.GUEST ? '訪客模式' : `${ROLE_LABELS[userRole]} - ${userId?.substring(0,6)}...`}</p></div>
             </div>
             {userRole === ROLES.GUEST ? <button onClick={() => setIsLoginModalOpen(true)} className={`${styles.btnPrimary} flex items-center bg-indigo-700 hover:bg-indigo-800 text-white shadow-md`}><LogIn className="w-4 h-4 mr-2" /> 員工登入</button> : <button onClick={() => signOut(auth)} className={`${styles.btnSecondary} flex items-center`}><LogOut className="w-4 h-4 mr-2" /> 登出</button>}
           </div>
-          <div className="max-w-7xl mx-auto px-4"><nav className="flex space-x-1 overflow-x-auto pb-1">{navItems.map(item => (<button key={item.id} onClick={() => { setCurrentTab(item.id); setEditingUnitId(null); setIsNewUnit(false); }} className={`px-5 py-3 text-sm font-medium rounded-t-lg flex items-center space-x-2 ${currentTab === item.id ? 'text-indigo-600 bg-indigo-50' : 'text-slate-500 hover:bg-slate-50'}`}>{item.icon} <span>{item.label}</span></button>))}</nav></div>
+          <div className="max-w-7xl mx-auto px-4"><nav className="flex space-x-1 overflow-x-auto pb-1 no-scrollbar">{navItems.map(item => (<button key={item.id} onClick={() => { setCurrentTab(item.id); setEditingUnitId(null); setIsNewUnit(false); }} className={`relative px-5 py-3 text-sm font-medium rounded-t-lg flex items-center space-x-2 transition-all duration-300 ${currentTab === item.id ? 'text-indigo-600 bg-indigo-50/50' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-50'}`}>{item.icon} <span>{item.label}</span>{currentTab === item.id && <span className="absolute bottom-0 left-0 w-full h-0.5 bg-indigo-600 rounded-t-full" />}</button>))}</nav></div>
         </header>
-        <main className="py-6">{renderTabContent()}</main>
-        {globalMessage.text && <div className={`fixed top-24 right-6 p-4 rounded-xl shadow-2xl z-50 flex items-center space-x-3 animate-slide-in ${globalMessage.type === 'error' ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'}`}><span className="font-medium">{globalMessage.text}</span><button onClick={() => setGlobalMessage({ text: '', type: '' })}><X className="w-4 h-4" /></button></div>}
+        <main className="py-6 animate-fade-in">{renderTabContent()}</main>
+        {globalMessage.text && <div className={`fixed top-24 right-6 p-4 rounded-xl shadow-2xl z-50 flex items-center space-x-3 animate-slide-in ${globalMessage.type === 'error' ? 'bg-rose-600 text-white' : globalMessage.type === 'info' ? 'bg-blue-600 text-white' : 'bg-emerald-600 text-white'}`}><span className="font-medium">{globalMessage.text}</span><button onClick={() => setGlobalMessage({ text: '', type: '' })} className="hover:bg-white/20 rounded-full p-1"><X className="w-4 h-4" /></button></div>}
         <LoginModal isOpen={isLoginModalOpen} onClose={() => setIsLoginModalOpen(false)} auth={auth} db={db} userId={userId} setGlobalMessage={setGlobalMessage} />
       </div>
   );
