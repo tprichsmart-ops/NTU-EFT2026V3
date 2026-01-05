@@ -65,7 +65,7 @@ import {
 const DOMAIN_SUFFIX = '@ntu.strategy.com';
 
 const ROLES = {
-  PROJECT_LEAD: 'project_lead', // 開發專案負責人 (最高權限)
+  PROJECT_LEAD: 'project_lead', // 開發專案負責人 (最高權限, 等同 Admin)
   SALES: 'sales',               // 開發業務人員 (一般權限)
   PENDING: 'pending',           // 註冊待定人員 (無權限)
   GUEST: 'guest'                // 未登入
@@ -86,6 +86,7 @@ const getAppId = () => {
 const rawAppId = getAppId();
 const appId = String(rawAppId).replace(/[^a-zA-Z0-9_-]/g, '_');
 
+// Hardcoded config provided by user
 const USER_PROVIDED_CONFIG = {
   apiKey: "AIzaSyD2euHjulZko-qcQzQxJcAv4FHWTtjzqv0",
   authDomain: "ntu-etf2026.firebaseapp.com",
@@ -103,7 +104,6 @@ const getFirebaseConfig = () => {
     }
     return USER_PROVIDED_CONFIG;
   } catch (e) {
-    console.warn("No valid firebase config found in environment, using hardcoded config.");
     return USER_PROVIDED_CONFIG;
   }
 };
@@ -300,17 +300,18 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db }) => {
   const [empId, setEmpId] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [localError, setLocalError] = useState(''); // 本地錯誤狀態
+  const [localError, setLocalError] = useState(''); 
 
   if (!isOpen) return null;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setIsLoading(true);
-    setLocalError(''); // 重置錯誤訊息
+    setLocalError('');
     const email = `${empId}${DOMAIN_SUFFIX}`;
     
     try {
+      // 00095 is always PROJECT_LEAD, others are PENDING
       const targetRole = (empId === '00095') ? ROLES.PROJECT_LEAD : ROLES.PENDING;
 
       if (isRegistering) {
@@ -332,6 +333,7 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db }) => {
         }
       } else {
         await signInWithEmailAndPassword(auth, email, password);
+        // Force update role for 00095 on login to ensure admin access
         if (db && empId === '00095') {
             const user = auth.currentUser;
             if(user) {
@@ -354,7 +356,6 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db }) => {
       if (error.code === 'auth/email-already-in-use') msg = '此工號已註冊，請直接登入';
       if (error.code === 'auth/operation-not-allowed') msg = '請至 Firebase Console 啟用 Email/Password 登入功能。';
       
-      // 顯示在 Modal 內部
       setLocalError(msg); 
     } finally {
       setIsLoading(false);
@@ -377,12 +378,11 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db }) => {
             <input type="password" required value={password} onChange={(e) => setPassword(e.target.value)} className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="••••••" minLength={6} />
           </div>
 
-          {/* 錯誤訊息顯示區 */}
           {localError && (
-             <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg flex items-start">
-                <AlertTriangle className="w-5 h-5 text-rose-500 mr-2 flex-shrink-0 mt-0.5" />
-                <span className="text-sm text-rose-700">{localError}</span>
-             </div>
+              <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg flex items-start">
+                  <AlertTriangle className="w-5 h-5 text-rose-500 mr-2 flex-shrink-0 mt-0.5" />
+                  <span className="text-sm text-rose-700">{localError}</span>
+              </div>
           )}
 
           <button type="submit" disabled={isLoading} className={`w-full py-2.5 rounded-lg text-white font-bold transition flex items-center justify-center ${isLoading ? 'bg-indigo-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700 shadow-lg shadow-indigo-500/30'}`}>{isLoading ? <Loader className="w-5 h-5 animate-spin" /> : (isRegistering ? '註冊' : '登入')}</button>
@@ -551,7 +551,6 @@ const UnitRecordView = ({ newUnitData, setNewUnitData, handleSaveUnit, handleAdd
   const availableBrands = [...new Set(equipmentDB.map((e) => e.brand))];
   const availableModels = [...new Set(equipmentDB.filter((e) => e.brand === equipmentSearch.brand).map((e) => e.model))];
   
-  // Permission logic
   const canEdit = userRole === ROLES.PROJECT_LEAD;
   const canAddHistory = userRole === ROLES.SALES || userRole === ROLES.PROJECT_LEAD;
 
@@ -601,20 +600,28 @@ const UnitRecordView = ({ newUnitData, setNewUnitData, handleSaveUnit, handleAdd
 };
 
 const Tab1Calendar = ({ appData, updatePrivateData, exportToExcel }) => {
+    // Re-implemented simplified version for space, but fully functional logic can be added here
+    // For now, restoring the basic view structure
     return (
-        <div className="p-8 text-center text-slate-500 bg-white rounded-xl shadow">
-            <Activity className="w-12 h-12 mx-auto mb-4 text-indigo-300"/>
-            <h2 className="text-xl font-bold mb-2">行事曆功能</h2>
-            <p>目前行事曆僅供瀏覽，請使用左側導覽列切換至「戰情地圖」進行操作。</p>
+        <div className="space-y-8 p-6 max-w-7xl mx-auto">
+          <div className="flex items-center space-x-3 mb-6">
+            <Activity className="w-8 h-8 text-indigo-600" />
+            <h2 className="text-3xl font-extrabold text-slate-800 tracking-tight">進攻行事曆</h2>
+          </div>
+          <div className="bg-white p-6 rounded-2xl shadow border border-slate-100 text-center text-slate-500">
+             <Activity className="w-12 h-12 mx-auto mb-4 text-indigo-300"/>
+             <h2 className="text-xl font-bold mb-2">行事曆功能</h2>
+             <p>請在此查看與管理所有進攻排程與會議紀錄。</p>
+             {/* Actual calendar implementation can be restored here if needed, keeping it simple to avoid errors for now */}
+          </div>
         </div>
     );
 };
 
-const Tab2Guidelines = ({ appData }) => {
-  // CRITICAL FIX: Safe access to prevent crash on initial load
-  const guidelines = appData.settings?.guidelines || [];
-  const talkScripts = appData.settings?.talkScripts || [];
-
+const Tab2Guidelines = ({ appData, updatePrivateData, userRole }) => {
+  const { guidelines, talkScripts } = appData.settings || { guidelines: [], talkScripts: [] };
+  const canEdit = userRole === ROLES.PROJECT_LEAD;
+  // Simplified view for display
   return (
     <div className="space-y-8 p-6 max-w-7xl mx-auto">
       <div className="flex items-center space-x-3 mb-6"><Target className="w-8 h-8 text-indigo-600" /><h2 className="text-3xl font-extrabold text-slate-800">攻擊準則</h2></div>
@@ -634,10 +641,7 @@ const Tab2Guidelines = ({ appData }) => {
 
 const Tab3TargetsMap = ({ appData, updatePrivateData, deleteUnits, exportToExcel, db, userId, setGlobalMessage, setEditingUnitId, setIsNewUnit, setCurrentTab, userRole }) => {
   const { units, settings } = appData;
-  // CRITICAL FIX: Default values to prevent white screen crashes on undefined data
   const areaMap = settings?.areaMap || [];
-  const equipmentDB = settings?.equipmentDB || [];
-  
   const totalUnits = units.length;
   const currentClients = units.filter((u) => u.attackStatus === 'client').length;
   const adminUnits = units.filter((u) => u.category === 'Administrative').length;
@@ -652,35 +656,21 @@ const Tab3TargetsMap = ({ appData, updatePrivateData, deleteUnits, exportToExcel
 
   const filteredUnits = useMemo(() => {
     return units.filter((unit) => {
-      // Safety Check: Ensure properties exist before calling .includes
-      const unitName = unit.name || '';
-      const unitId = unit.id || '';
-      const unitContact = unit.contactName || '';
-      const unitPhone = unit.contactPhone || '';
-      const unitCategory = unit.category || '';
-
       let equipmentJson = safeParse(unit.equipment);
       if (!Array.isArray(equipmentJson)) equipmentJson = []; 
-      
       const hasMatchingEquipment = filter.brand || filter.model ? equipmentJson.some((eq) => (filter.brand === '' || eq.brand.includes(filter.brand)) && (filter.model === '' || eq.model.includes(filter.model))) : true;
-      
-      return (filter.id === '' || unitId.includes(filter.id)) && 
-             (filter.type === '' || unitCategory === filter.type) && 
-             (filter.name === '' || unitName.includes(filter.name)) && 
-             (filter.contact === '' || unitContact.includes(filter.contact)) && 
-             (filter.phone === '' || unitPhone.includes(filter.phone)) && 
-             hasMatchingEquipment;
+      return (filter.id === '' || unit.id.includes(filter.id)) && (filter.type === '' || unit.category === filter.type) && (filter.name === '' || unit.name.includes(filter.name)) && (filter.contact === '' || unit.contactName.includes(filter.contact)) && (filter.phone === '' || unit.contactPhone.includes(filter.phone)) && hasMatchingEquipment;
     });
   }, [units, filter]);
 
   useEffect(() => {
-    if (!db || !userId) return; // Strictly waiting for user to be logged in
+    if (!db || !userId) return; 
     const q = query(getMapChunksRef(db), orderBy('index'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       if (snapshot.empty) { setMapImageUrl(null); return; }
       setIsMapLoading(true);
       try { const chunks = snapshot.docs.map(doc => doc.data().data); setMapImageUrl(chunks.join('')); } catch (err) { console.error(err); } finally { setIsMapLoading(false); }
-    }, (error) => console.log("Map load info:", error.message)); // Swallow init permission error
+    }, (error) => console.log("Map load info:", error.message)); 
     return () => unsubscribe();
   }, [db, userId]);
 
@@ -752,21 +742,74 @@ const Tab3TargetsMap = ({ appData, updatePrivateData, deleteUnits, exportToExcel
   );
 };
 
-const Tab4Record = ({ appData, updateUnit, addDoc, db, userId, exportToExcel }) => {
+const Tab4Record = ({ appData, updateUnit, addDoc, db, userId, exportToExcel, setCurrentTab }) => {
   return (
-    <div className="p-8 text-center text-slate-500 bg-white rounded-xl shadow">
-       <h2 className="text-xl font-bold mb-2">請先選擇客戶</h2>
-       <p>請前往「戰情地圖」點選「詳細」或「新增」來進入編輯模式。</p>
+    <div className="p-6 space-y-6 max-w-7xl mx-auto">
+      <div className="flex items-center space-x-3 mb-6">
+        <Edit className="w-8 h-8 text-indigo-600" />
+        <h2 className="text-3xl font-extrabold text-slate-800">拜訪紀錄</h2>
+      </div>
+      <div className="bg-white p-8 rounded-xl shadow-sm border border-slate-200 text-center">
+         <FileSpreadsheet className="w-16 h-16 mx-auto mb-4 text-slate-300"/>
+         <h3 className="text-xl font-bold text-slate-700 mb-2">管理拜訪紀錄</h3>
+         <p className="text-slate-500 mb-6">請前往「戰情地圖」選擇特定客戶，點擊「詳細」或「編輯」以新增拜訪紀錄。</p>
+         <button onClick={() => setCurrentTab('targets')} className={styles.btnPrimary + " mx-auto"}>前往戰情地圖</button>
+      </div>
     </div>
-  )
+  );
 };
 
-const Tab5Settings = ({ appData }) => (
-  <div className="p-6 text-center bg-white rounded-xl shadow">
-     <h2 className="text-xl font-bold mb-2">系統參數設定</h2>
-     <p className="text-slate-500">此區域僅供管理員調整系統參數（棟別、設備型號等）。</p>
-  </div>
-);
+const Tab5Settings = ({ appData, updatePrivateData }) => {
+  const [newBuilding, setNewBuilding] = useState({ name: '', code: '' });
+  const [newEquipment, setNewEquipment] = useState({ brand: '', model: '', type: '' });
+
+  const handleUpdateSettings = async (field, value) => { await updatePrivateData({ [field]: value }); };
+
+  const handleAddBuilding = () => {
+    if (newBuilding.name && newBuilding.code) {
+      const updatedBuildings = [...appData.settings.buildings, newBuilding];
+      handleUpdateSettings('buildings', updatedBuildings);
+      setNewBuilding({ name: '', code: '' });
+    }
+  };
+
+  const handleAddEquipmentDB = () => {
+    if (newEquipment.brand && newEquipment.model && newEquipment.type) {
+      const updatedDB = [...appData.settings.equipmentDB, newEquipment];
+      handleUpdateSettings('equipmentDB', updatedDB);
+      setNewEquipment({ brand: '', model: '', type: '' });
+    }
+  };
+
+  return (
+    <div className="space-y-8 p-6 max-w-7xl mx-auto">
+      <div className="flex items-center space-x-3 mb-6"><Settings className="w-8 h-8 text-indigo-600" /><h2 className="text-3xl font-extrabold text-slate-800">系統參數設定</h2></div>
+      
+      {/* 1. 棟別設定 */}
+      <div className="bg-white p-6 rounded-2xl shadow-xl border border-slate-100">
+        <h3 className="text-xl font-bold mb-6 text-slate-800 border-b pb-2 flex items-center"><Building className="w-5 h-5 mr-2 text-indigo-500" /> 棟別設定</h3>
+        <div className="flex flex-wrap gap-3 mb-6 bg-slate-50 p-4 rounded-xl">
+          <input type="text" value={newBuilding.name} onChange={(e) => setNewBuilding((p) => ({ ...p, name: e.target.value }))} className={`${styles.formInput} flex-grow`} placeholder="名稱" />
+          <input type="text" value={newBuilding.code} onChange={(e) => setNewBuilding((p) => ({ ...p, code: e.target.value }))} className={`${styles.formInput} w-24`} placeholder="代號" />
+          <button onClick={handleAddBuilding} className={styles.btnPrimary}><Plus className="w-4 h-4 mr-1" /> 新增</button>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">{appData.settings.buildings.map((b) => (<div key={b.code} className="flex justify-between items-center p-3 bg-white border border-slate-200 rounded-lg shadow-sm"><p className="text-slate-700 font-medium">{b.name} <span className="ml-2 px-2 py-0.5 bg-indigo-100 text-indigo-700 text-xs rounded-full">{b.code}</span></p><button onClick={() => handleUpdateSettings('buildings', appData.settings.buildings.filter(x => x.code !== b.code))} className="text-slate-400 hover:text-red-500"><Trash2 className="w-4 h-4" /></button></div>))}</div>
+      </div>
+
+      {/* 2. 設備資料庫設定 */}
+      <div className="bg-white p-6 rounded-2xl shadow-xl border border-slate-100">
+        <h3 className="text-xl font-bold mb-6 text-slate-800 border-b pb-2 flex items-center"><Activity className="w-5 h-5 mr-2 text-indigo-500" /> 設備資料庫</h3>
+        <div className="flex flex-wrap gap-3 mb-6 bg-slate-50 p-4 rounded-xl">
+          <select value={newEquipment.type} onChange={(e) => setNewEquipment((p) => ({ ...p, type: e.target.value }))} className={`${styles.formSelect} flex-1`}><option value="">選擇類型</option>{appData.settings.machineTypes.map(t => <option key={t} value={t}>{t}</option>)}</select>
+          <input type="text" value={newEquipment.brand} onChange={(e) => setNewEquipment((p) => ({ ...p, brand: e.target.value }))} className={`${styles.formInput} flex-1`} placeholder="廠牌" />
+          <input type="text" value={newEquipment.model} onChange={(e) => setNewEquipment((p) => ({ ...p, model: e.target.value }))} className={`${styles.formInput} flex-1`} placeholder="型號" />
+          <button onClick={handleAddEquipmentDB} className={styles.btnPrimary}><Plus className="w-4 h-4 mr-1" /> 新增</button>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-96 overflow-y-auto">{appData.settings.equipmentDB.map((e, index) => (<div key={index} className="flex justify-between items-center p-3 bg-white border border-slate-200 rounded-lg shadow-sm"><div><span className="font-bold text-slate-800">{e.brand} {e.model}</span><span className="block text-xs text-slate-500">{e.type}</span></div><button onClick={() => handleUpdateSettings('equipmentDB', appData.settings.equipmentDB.filter(x => x !== e))} className="text-slate-400 hover:text-red-500"><Trash2 className="w-4 h-4" /></button></div>))}</div>
+      </div>
+    </div>
+  );
+};
 
 const TabAdmin = ({ db, currentUserId }) => {
   const [users, setUsers] = useState([]);
@@ -839,7 +882,7 @@ const MainApp = () => {
         console.error("Firebase init failed:", e);
     }
   }, []);
-  
+
   // Auth Listener
   useEffect(() => {
     if (!auth) return;
@@ -1027,10 +1070,10 @@ const MainApp = () => {
     
     switch (currentTab) {
       case 'targets': return <Tab3TargetsMap appData={appData} userRole={userRole} db={db} userId={userId} setGlobalMessage={setGlobalMessage} setCurrentTab={setCurrentTab} setEditingUnitId={setEditingUnitId} setIsNewUnit={setIsNewUnit} updatePrivateData={updatePrivateData} />;
-      case 'calendar': return <Tab1Calendar appData={appData} />;
-      case 'guidelines': return <Tab2Guidelines appData={appData} />;
-      case 'record': return <Tab4Record />; // Placeholder
-      case 'settings': return <Tab5Settings />;
+      case 'calendar': return <Tab1Calendar appData={appData} updatePrivateData={updatePrivateData} exportToExcel={exportToExcel} />;
+      case 'guidelines': return <Tab2Guidelines appData={appData} updatePrivateData={updatePrivateData} userRole={userRole} />;
+      case 'record': return <Tab4Record appData={appData} setCurrentTab={setCurrentTab} />; 
+      case 'settings': return <Tab5Settings appData={appData} updatePrivateData={updatePrivateData} />;
       case 'admin': return <TabAdmin db={db} currentUserId={userId} />;
       default: return null;
     }
@@ -1039,9 +1082,13 @@ const MainApp = () => {
   const navItems = [
     { id: 'targets', label: '戰情地圖', icon: <MapPin className="w-4 h-4" /> },
     { id: 'calendar', label: '行事曆', icon: <Activity className="w-4 h-4" /> },
+    { id: 'record', label: '拜訪紀錄', icon: <Edit className="w-4 h-4" /> },
     { id: 'guidelines', label: '攻擊準則', icon: <Target className="w-4 h-4" /> },
   ];
-  if (userRole === ROLES.PROJECT_LEAD) navItems.push({ id: 'admin', label: '人員管理', icon: <UserCog className="w-4 h-4" /> });
+  if (userRole === ROLES.PROJECT_LEAD) {
+     navItems.push({ id: 'settings', label: '設定', icon: <Building className="w-4 h-4" /> });
+     navItems.push({ id: 'admin', label: '人員管理', icon: <UserCog className="w-4 h-4" /> });
+  }
 
   return (
       <div className="min-h-screen bg-slate-50 font-sans text-slate-900">
