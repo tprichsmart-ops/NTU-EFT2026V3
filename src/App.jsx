@@ -24,7 +24,7 @@ import {
   getDocs,
   limit,
   getDoc,
-  where // Added 'where' for query filtering
+  where
 } from 'firebase/firestore';
 import {
   ChevronRight,
@@ -312,15 +312,18 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db, userId }) => 
         const user = userCredential.user;
         
         if (db) {
-            // Check if this is the first user EVER in the system
-            const usersSnapshot = await getDocs(query(getAllUsersRef(db), limit(1)));
-            const isFirstUser = usersSnapshot.empty;
-            const role = isFirstUser ? ROLES.ADMIN : ROLES.VISITOR;
+            // Updated Logic: Check if there are ANY admins in the system
+            // If NO admins exist -> I become ADMIN.
+            // If ANY admin exists -> I become VISITOR.
+            const adminQuery = query(getAllUsersRef(db), where("role", "==", ROLES.ADMIN), limit(1));
+            const adminSnapshot = await getDocs(adminQuery);
+            const isFirstAdmin = adminSnapshot.empty;
+            const role = isFirstAdmin ? ROLES.ADMIN : ROLES.VISITOR;
             
             await setDoc(getUserRoleRef(db, user.uid), {
               employeeId: empId, role, email, createdAt: new Date().toISOString()
             });
-            setGlobalMessage({ text: isFirstUser ? '註冊成功！您是第一位使用者，已自動取得管理員權限。' : '註冊成功！請等待管理員核准權限。', type: 'success' });
+            setGlobalMessage({ text: isFirstAdmin ? '註冊成功！系統目前無管理員，您已自動升級為管理員。' : '註冊成功！請等待管理員核准權限。', type: 'success' });
         }
       } else {
         await signInWithEmailAndPassword(auth, email, password);
@@ -345,7 +348,7 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db, userId }) => 
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-8 relative">
         <button onClick={onClose} className="absolute top-4 right-4 text-slate-400 hover:text-slate-600"><X className="w-6 h-6" /></button>
         <h2 className="text-2xl font-bold text-slate-800 mb-2 flex items-center justify-center"><Shield className="w-6 h-6 mr-2 text-indigo-600" />{isRegistering ? '註冊新帳號' : '員工登入'}</h2>
-        <p className="text-center text-slate-500 mb-6 text-sm">{isRegistering ? '首位註冊者將自動成為管理員' : '請使用您的工號與密碼登入'}</p>
+        <p className="text-center text-slate-500 mb-6 text-sm">{isRegistering ? '若系統無管理員，首位註冊者將自動取得權限' : '請使用您的工號與密碼登入'}</p>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">工號</label>
@@ -1019,7 +1022,6 @@ const MainApp = () => {
         <main className="py-6">{renderTabContent()}</main>
         {globalMessage.text && <div className={`fixed top-24 right-6 p-4 rounded-xl shadow-2xl z-50 flex items-center space-x-3 animate-slide-in ${globalMessage.type === 'error' ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'}`}><span className="font-medium">{globalMessage.text}</span><button onClick={() => setGlobalMessage({ text: '', type: '' })}><X className="w-4 h-4" /></button></div>}
         <LoginModal isOpen={isLoginModalOpen} onClose={() => setIsLoginModalOpen(false)} auth={auth} db={db} userId={userId} setGlobalMessage={setGlobalMessage} />
-        {showConfigModal && <ConfigModal onSave={(conf) => { localStorage.setItem('manual_firebase_config', JSON.stringify(conf)); window.location.reload(); }} />}
       </div>
   );
 };
