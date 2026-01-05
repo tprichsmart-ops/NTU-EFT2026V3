@@ -751,6 +751,11 @@ const App = () => {
 
   const [editingUnitId, setEditingUnitId] = useState(null);
   const [isNewUnit, setIsNewUnit] = useState(false);
+  
+  // State for form data - lifted to App level
+  const [newUnitData, setNewUnitData] = useState({
+      name: '', category: 'Academic', subgroup: '', buildingId: '', attackStatus: 'engaged', contactName: '', contactPhone: '', areaCode: '', equipment: [], characteristics: [], history: []
+  });
 
   // Initialize Firebase
   useEffect(() => {
@@ -805,6 +810,24 @@ const App = () => {
     }, (error) => console.log("Settings listener info:", error.message));
     return () => { unsubUnits(); unsubSettings(); };
   }, [db, userId]);
+  
+  // Sync form data when editingUnitId changes
+  useEffect(() => {
+     if (editingUnitId) {
+        const unit = appData.units.find(u => u.id === editingUnitId);
+        if (unit) {
+           setNewUnitData({
+              ...unit,
+              equipment: typeof unit.equipment === 'string' ? safeParse(unit.equipment) : (unit.equipment || []),
+              history: typeof unit.history === 'string' ? safeParse(unit.history) : (unit.history || [])
+           });
+        }
+     } else if (isNewUnit) {
+        setNewUnitData({
+           name: '', category: 'Academic', subgroup: '', buildingId: '', attackStatus: 'engaged', contactName: '', contactPhone: '', areaCode: '', equipment: [], characteristics: [], history: []
+        });
+     }
+  }, [editingUnitId, isNewUnit, appData.units]);
 
   const updateUnit = async (id, data) => {
     const dataToSave = {};
@@ -840,30 +863,35 @@ const App = () => {
 
   const renderTabContent = () => {
     if (editingUnitId || isNewUnit) {
-       // Logic to find current unit data
-       const currentUnit = editingUnitId ? appData.units.find(u => u.id === editingUnitId) : {
-          name: '', category: 'Academic', subgroup: '', buildingId: '', attackStatus: 'engaged', contactName: '', contactPhone: '', areaCode: '', equipment: [], characteristics: [], history: []
-       };
-       // Parse JSON strings back to arrays for the view
-       const parsedUnit = {
-          ...currentUnit,
-          equipment: typeof currentUnit.equipment === 'string' ? safeParse(currentUnit.equipment) : currentUnit.equipment,
-          history: typeof currentUnit.history === 'string' ? safeParse(currentUnit.history) : currentUnit.history
-       };
-
        return (
           <UnitRecordView 
-             newUnitData={parsedUnit}
-             setNewUnitData={(updater) => {
-                // Simplified state update for this view context
-             }}
+             newUnitData={newUnitData}
+             setNewUnitData={setNewUnitData}
              key={editingUnitId || 'new'}
              isNewUnit={isNewUnit}
              appData={appData}
              userRole={userRole}
              setEditingUnitId={setEditingUnitId}
              setIsNewUnit={setIsNewUnit}
-             handleSaveUnit={async () => {}} // Handled inside View via direct props if refined, but here relying on prop drilling functions
+             handleSaveUnit={async () => {
+                 try {
+                    if (isNewUnit) {
+                        await addDocWrapper(getUnitCollectionRef(db), { ...newUnitData, createdAt: new Date().toISOString() });
+                    } else {
+                        await updateUnit(editingUnitId, newUnitData);
+                    }
+                    setEditingUnitId(null);
+                    setIsNewUnit(false);
+                    setGlobalMessage({ text: '儲存成功！', type: 'success' });
+                 } catch (e) {
+                    console.error(e);
+                    alert("儲存失敗");
+                 }
+             }} 
+             handleAddHistory={(newLog) => {
+                 const logEntry = { ...newLog, date: new Date().toISOString().substring(0, 10), id: crypto.randomUUID() };
+                 setNewUnitData(p => ({ ...p, history: [...p.history, logEntry] }));
+             }}
              updateUnit={updateUnit}
              addDoc={addDocWrapper}
              getUnitCollectionRef={() => getUnitCollectionRef(db)}
@@ -900,7 +928,7 @@ const App = () => {
               <div className="w-10 h-10 bg-gradient-to-br from-indigo-600 to-blue-500 rounded-xl flex items-center justify-center text-white mr-3"><Activity className="w-6 h-6"/></div>
               <div><h1 className="text-xl font-bold">2026 台大攻略戰情室</h1><p className="text-xs text-slate-500">{userRole === ROLES.GUEST ? '訪客模式' : `${ROLE_LABELS[userRole]} - ${userId?.substring(0,6)}...`}</p></div>
             </div>
-            {userRole === ROLES.GUEST ? <button onClick={() => setIsLoginModalOpen(true)} className={`${styles.btnPrimary} flex items-center`}><LogIn className="w-4 h-4 mr-2" /> 員工登入</button> : <button onClick={() => signOut(auth)} className={`${styles.btnSecondary} flex items-center`}><LogOut className="w-4 h-4 mr-2" /> 登出</button>}
+            {userRole === ROLES.GUEST ? <button onClick={() => setIsLoginModalOpen(true)} className={`${styles.btnPrimary} flex items-center bg-indigo-700 hover:bg-indigo-800 text-white shadow-md`}><LogIn className="w-4 h-4 mr-2" /> 員工登入</button> : <button onClick={() => signOut(auth)} className={`${styles.btnSecondary} flex items-center`}><LogOut className="w-4 h-4 mr-2" /> 登出</button>}
           </div>
           <div className="max-w-7xl mx-auto px-4"><nav className="flex space-x-1 overflow-x-auto pb-1">{navItems.map(item => (<button key={item.id} onClick={() => { setCurrentTab(item.id); setEditingUnitId(null); setIsNewUnit(false); }} className={`px-5 py-3 text-sm font-medium rounded-t-lg flex items-center space-x-2 ${currentTab === item.id ? 'text-indigo-600 bg-indigo-50' : 'text-slate-500 hover:bg-slate-50'}`}>{item.icon} <span>{item.label}</span></button>))}</nav></div>
         </header>
