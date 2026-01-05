@@ -41,10 +41,52 @@ import {
   FileSpreadsheet,
   Info,
   Image as ImageIcon,
-  UploadCloud
+  UploadCloud,
+  RefreshCw
 } from 'lucide-react';
 
-// --- 1. Global Firebase Configuration ---
+// ==========================================
+// Level 0: Error Boundary (安全氣囊)
+// ==========================================
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error("Uncaught error:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex flex-col items-center justify-center min-h-screen bg-slate-50 p-6 text-center">
+          <AlertTriangle className="w-16 h-16 text-rose-500 mb-4" />
+          <h1 className="text-2xl font-bold text-slate-800 mb-2">發生預期外的錯誤</h1>
+          <p className="text-slate-600 mb-6 max-w-md bg-white p-4 rounded shadow text-left text-sm font-mono overflow-auto">
+            {this.state.error?.toString()}
+          </p>
+          <button
+            onClick={() => window.location.reload()}
+            className="px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 flex items-center"
+          >
+            <RefreshCw className="w-4 h-4 mr-2" /> 重新整理頁面
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// ==========================================
+// Level 1: Configuration & Helpers
+// ==========================================
 
 const getAppId = () => {
   if (typeof __app_id !== 'undefined') return __app_id;
@@ -60,8 +102,6 @@ const firebaseConfig =
   typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
 const initialAuthToken =
   typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-
-// --- 2. Helpers ---
 
 const safeStringify = (data) => JSON.stringify(data);
 const safeParse = (data) => {
@@ -103,7 +143,7 @@ const compressImage = (file, maxWidth = 2500, quality = 0.85) => {
   });
 };
 
-// --- Firestore Helpers ---
+// Firestore Refs Helpers
 const getUnitCollectionRef = (database, uid) => {
   if (!uid) return null;
   return collection(database, 'artifacts', appId, 'users', uid, 'units');
@@ -119,18 +159,7 @@ const getMapChunksRef = (database, uid) => {
   return collection(database, 'artifacts', appId, 'users', uid, 'map_chunks');
 };
 
-// --- Styles ---
-const styles = {
-  formInput: "w-full px-4 py-2 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 outline-none text-slate-800",
-  formSelect: "w-full px-4 py-2 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 outline-none text-slate-800",
-  formTextarea: "w-full px-4 py-2 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 outline-none text-slate-800",
-  btnPrimary: "px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition shadow-lg shadow-indigo-500/30 flex items-center justify-center font-medium active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed",
-  btnSecondary: "px-4 py-2 bg-white text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 transition shadow-sm flex items-center justify-center font-medium active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed",
-  btnDanger: "px-4 py-2 bg-rose-50 text-rose-600 border border-rose-200 rounded-lg hover:bg-rose-100 transition flex items-center justify-center font-medium disabled:opacity-50 disabled:cursor-not-allowed",
-  btnInfo: "px-4 py-2 bg-sky-50 text-sky-600 border border-sky-200 rounded-lg hover:bg-sky-100 transition flex items-center justify-center font-medium",
-  checkbox: "w-5 h-5 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
-};
-
+// Initial Data
 const initialSettings = {
   buildings: [
     { name: '行政大樓', code: 'A1' },
@@ -168,7 +197,19 @@ const initialSettings = {
   areaMap: [],
 };
 
-// --- 3. Custom Hooks ---
+// Styles
+const styles = {
+  formInput: "w-full px-4 py-2 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 outline-none text-slate-800",
+  formSelect: "w-full px-4 py-2 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 outline-none text-slate-800",
+  formTextarea: "w-full px-4 py-2 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 outline-none text-slate-800",
+  btnPrimary: "px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition shadow-lg shadow-indigo-500/30 flex items-center justify-center font-medium active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed",
+  btnSecondary: "px-4 py-2 bg-white text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 transition shadow-sm flex items-center justify-center font-medium active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed",
+  btnDanger: "px-4 py-2 bg-rose-50 text-rose-600 border border-rose-200 rounded-lg hover:bg-rose-100 transition flex items-center justify-center font-medium disabled:opacity-50 disabled:cursor-not-allowed",
+  btnInfo: "px-4 py-2 bg-sky-50 text-sky-600 border border-sky-200 rounded-lg hover:bg-sky-100 transition flex items-center justify-center font-medium",
+  checkbox: "w-5 h-5 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
+};
+
+// Custom Hooks
 const useExcelExport = () => {
   useEffect(() => {
     if (typeof window.XLSX === 'undefined') {
@@ -241,7 +282,9 @@ const useExcelExport = () => {
   return exportToExcel;
 };
 
-// --- 4. GLOBAL UI COMPONENTS ---
+// ==========================================
+// Level 2: Base UI Components (MUST BE DEFINED HERE)
+// ==========================================
 
 const StatusCard = ({ title, value, icon, gradient }) => (
   <div
@@ -284,6 +327,10 @@ const FilterSelect = ({ label, value, onChange, children }) => (
     </select>
   </div>
 );
+
+// ==========================================
+// Level 3: Complex Feature Components
+// ==========================================
 
 const EditBlock = ({ item, field, onSave, onCancel, collection }) => {
   const [editTitle, setEditTitle] = useState(item.title);
@@ -959,7 +1006,9 @@ const UnitRecordView = ({
   );
 };
 
-// --- 5. Tab Components (Must be defined BEFORE App) ---
+// ==========================================
+// Level 4: Tab Components (MUST BE DEFINED HERE)
+// ==========================================
 
 const Tab1Calendar = ({ appData, updatePrivateData, exportToExcel }) => {
   const totalUnits = appData.units.length;
@@ -2029,7 +2078,7 @@ const Tab3TargetsMap = ({
   const [mapImageUrl, setMapImageUrl] = useState(null);
   const [isMapLoading, setIsMapLoading] = useState(false);
   
-  // NEW: Upload Progress State
+  // Upload Progress State
   const [uploadProgress, setUploadProgress] = useState(0);
 
   // Map Listeners
@@ -2136,23 +2185,32 @@ const Tab3TargetsMap = ({
   };
 
   const uploadMapAsChunks = async (file) => {
-    if (!db || !userId) return;
+    if (!db || !userId) {
+      alert("尚未完成登入初始化，請稍後再試。");
+      return;
+    }
     
+    // Explicitly check for valid file types
+    const validTypes = ['image/jpeg', 'image/png', 'image/jpg'];
+    if (!validTypes.includes(file.type)) {
+      alert("不支援的檔案格式。請上傳 JPG 或 PNG 圖片。");
+      return;
+    }
+
     if (file.size > 15 * 1024 * 1024) {
       alert("原始圖片過大 (>15MB)，請先自行縮小後再上傳。");
       return;
     }
 
     try {
-      setUploadProgress(10); // Start processing
+      setUploadProgress(10); 
       setGlobalMessage({ text: '正在處理圖片...', type: 'info' });
 
-      // Simulate step
       setTimeout(() => setUploadProgress(30), 500);
 
       const compressedBase64 = await compressImage(file, 2500, 0.85);
       
-      setUploadProgress(50); // Compression done
+      setUploadProgress(50); 
 
       const CHUNK_SIZE = 800 * 1024;
       const totalLength = compressedBase64.length;
@@ -2166,7 +2224,7 @@ const Tab3TargetsMap = ({
       }
 
       setGlobalMessage({ text: `準備上傳 ${chunkCount} 個區塊...`, type: 'info' });
-      setUploadProgress(70); // Ready to upload chunks
+      setUploadProgress(70); 
 
       const mapRef = getMapChunksRef(db, userId);
       const batch = writeBatch(db);
@@ -2181,14 +2239,13 @@ const Tab3TargetsMap = ({
         batch.set(docRef, { index, data: chunk });
       });
 
-      setUploadProgress(85); // Sending to Firestore
+      setUploadProgress(85); 
 
       await batch.commit();
       
-      setUploadProgress(100); // Complete
+      setUploadProgress(100); 
       setGlobalMessage({ text: '地圖更新成功！', type: 'success' });
       
-      // Reset progress after a short delay
       setTimeout(() => setUploadProgress(0), 1500);
 
     } catch (error) {
@@ -2370,9 +2427,15 @@ const Tab3TargetsMap = ({
             <label className={`${styles.btnPrimary} cursor-pointer flex items-center bg-slate-600 hover:bg-slate-700`}>
               <input
                 type="file"
-                accept="image/*"
+                accept="image/*" // Restrict to images only
                 className="hidden"
-                onChange={(e) => uploadMapAsChunks(e.target.files[0])}
+                // Ensure same file triggers change event
+                onClick={(e) => (e.target.value = null)}
+                onChange={(e) => {
+                  if(e.target.files && e.target.files[0]) {
+                    uploadMapAsChunks(e.target.files[0]);
+                  }
+                }}
               />
               <UploadCloud className="w-4 h-4 mr-1" />
               上傳地圖
@@ -3028,7 +3091,9 @@ const Tab5Settings = ({ appData, updatePrivateData }) => {
   );
 };
 
-// --- 6. Main App Component (DEFINED LAST) ---
+// ==========================================
+// Level 5: Main App Component (DEFINED LAST)
+// ==========================================
 
 const App = () => {
   const [currentTab, setCurrentTab] = useState('targets');
@@ -3250,14 +3315,7 @@ const App = () => {
             db={db}
             userId={userId}
             setGlobalMessage={setGlobalMessage}
-            // Passing setters from App isn't strictly necessary if Tab3 handles its own UI state for editing,
-            // but here we might want to switch tabs from Tab3.
-            setEditingUnitId={(id) => { /* Placeholder if needed, or pass setters if lifting state up again */ }} 
-            setIsNewUnit={(val) => { /* Placeholder */ }}
-            // Actually Tab3 needs to switch tab to 'record'
             setCurrentTab={setCurrentTab}
-            // And needs to set editing unit ID which is managed by App? No, let's look at previous logic.
-            // In previous version, editingUnitId was inside App. We should pass it down.
           />
         );
       case 'record':
@@ -3304,80 +3362,86 @@ const App = () => {
   ];
 
   return (
-    <div className="min-h-screen bg-slate-50 font-sans text-slate-900 selection:bg-indigo-100 selection:text-indigo-800">
-      <header className="sticky top-0 z-50 backdrop-blur-md bg-white/80 border-b border-slate-200 shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center h-16">
-            <div className="flex items-center">
-              <div className="w-10 h-10 bg-gradient-to-br from-indigo-600 to-blue-500 rounded-xl flex items-center justify-center text-white shadow-lg shadow-indigo-500/30 mr-3">
-                <Activity className="w-6 h-6" />
-              </div>
-              <div>
-                <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-slate-900 to-slate-700">
-                  2026 台大攻略戰情室
-                </h1>
-                <p className="text-xs text-slate-500 font-mono">ID: {userId ? String(userId).substring(0, 8) + '...' : 'Guest'}</p>
+    <ErrorBoundary>
+      <div className="min-h-screen bg-slate-50 font-sans text-slate-900 selection:bg-indigo-100 selection:text-indigo-800">
+        <header className="sticky top-0 z-50 backdrop-blur-md bg-white/80 border-b border-slate-200 shadow-sm">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="flex justify-between items-center h-16">
+              <div className="flex items-center">
+                <div className="w-10 h-10 bg-gradient-to-br from-indigo-600 to-blue-500 rounded-xl flex items-center justify-center text-white shadow-lg shadow-indigo-500/30 mr-3">
+                  <Activity className="w-6 h-6" />
+                </div>
+                <div>
+                  <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-slate-900 to-slate-700">
+                    2026 台大攻略戰情室
+                  </h1>
+                  <p className="text-xs text-slate-500 font-mono">ID: {userId ? String(userId).substring(0, 8) + '...' : 'Guest'}</p>
+                </div>
               </div>
             </div>
           </div>
-        </div>
 
-        {/* Navigation Tabs */}
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <nav className="flex space-x-1 overflow-x-auto pb-1 no-scrollbar">
-            {navItems.map((item) => {
-              const isActive = currentTab === item.id;
-              return (
-                <button
-                  key={item.id}
-                  onClick={() => setCurrentTab(item.id)}
-                  className={`
-                    relative px-5 py-3 text-sm font-medium transition-all duration-300 rounded-t-lg flex items-center space-x-2 whitespace-nowrap
-                    ${isActive 
-                      ? 'text-indigo-600 bg-indigo-50/50' 
-                      : 'text-slate-500 hover:text-slate-700 hover:bg-slate-50'}
-                  `}
-                >
-                  {item.icon}
-                  <span>{item.label}</span>
-                  {isActive && (
-                    <span className="absolute bottom-0 left-0 w-full h-0.5 bg-indigo-600 rounded-t-full" />
-                  )}
-                </button>
-              );
-            })}
-          </nav>
-        </div>
-      </header>
+          {/* Navigation Tabs */}
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <nav className="flex space-x-1 overflow-x-auto pb-1 no-scrollbar">
+              {navItems.map((item) => {
+                const isActive = currentTab === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => setCurrentTab(item.id)}
+                    className={`
+                      relative px-5 py-3 text-sm font-medium transition-all duration-300 rounded-t-lg flex items-center space-x-2 whitespace-nowrap
+                      ${isActive 
+                        ? 'text-indigo-600 bg-indigo-50/50' 
+                        : 'text-slate-500 hover:text-slate-700 hover:bg-slate-50'}
+                    `}
+                  >
+                    {item.icon}
+                    <span>{item.label}</span>
+                    {isActive && (
+                      <span className="absolute bottom-0 left-0 w-full h-0.5 bg-indigo-600 rounded-t-full" />
+                    )}
+                  </button>
+                );
+              })}
+            </nav>
+          </div>
+        </header>
 
-      {/* Global Message Toast */}
-      {globalMessage.text && (
-        <div
-          className={`fixed top-24 right-6 p-4 rounded-xl shadow-2xl z-50 flex items-center space-x-3 transform transition-all duration-500 animate-slide-in ${
-            globalMessage.type === 'success' 
-              ? 'bg-emerald-600 text-white' 
-              : 'bg-rose-600 text-white'
-          }`}
-        >
-          {globalMessage.type === 'success' ? (
-            <CheckCircle className="w-5 h-5" />
-          ) : (
-            <AlertTriangle className="w-5 h-5" />
-          )}
-          <span className="font-medium">{globalMessage.text}</span>
-          <button
-            onClick={() => setGlobalMessage({ text: '', type: '' })}
-            className="ml-2 hover:bg-white/20 rounded-full p-1"
+        {/* Global Message Toast */}
+        {globalMessage.text && (
+          <div
+            className={`fixed top-24 right-6 p-4 rounded-xl shadow-2xl z-50 flex items-center space-x-3 transform transition-all duration-500 animate-slide-in ${
+              globalMessage.type === 'success' 
+                ? 'bg-emerald-600 text-white' 
+                : globalMessage.type === 'error'
+                ? 'bg-rose-600 text-white'
+                : 'bg-blue-600 text-white'
+            }`}
           >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
+            {globalMessage.type === 'success' ? (
+              <CheckCircle className="w-5 h-5" />
+            ) : globalMessage.type === 'error' ? (
+              <AlertTriangle className="w-5 h-5" />
+            ) : (
+              <Info className="w-5 h-5" />
+            )}
+            <span className="font-medium">{globalMessage.text}</span>
+            <button
+              onClick={() => setGlobalMessage({ text: '', type: '' })}
+              className="ml-2 hover:bg-white/20 rounded-full p-1"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
 
-      <main className="py-6 animate-fade-in">
-        {renderTabContent()}
-      </main>
-    </div>
+        <main className="py-6 animate-fade-in">
+          {renderTabContent()}
+        </main>
+      </div>
+    </ErrorBoundary>
   );
 };
 
