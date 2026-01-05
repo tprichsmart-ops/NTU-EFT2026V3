@@ -370,6 +370,7 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db, userId }) => 
       if (error.code === 'auth/invalid-email') msg = '工號格式錯誤';
       if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password' || error.code === "auth/invalid-credential") msg = '工號或密碼錯誤';
       if (error.code === 'auth/email-already-in-use') msg = '此工號已註冊';
+      if (error.code === 'auth/operation-not-allowed') msg = '錯誤：未在 Firebase Console 啟用「電子郵件/密碼」登入功能。請至 Authentication > Sign-in method 開啟。';
       setGlobalMessage({ text: msg, type: 'error' });
     } finally {
       setIsLoading(false);
