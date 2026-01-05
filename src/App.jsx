@@ -22,9 +22,7 @@ import {
   orderBy,
   query,
   getDocs,
-  limit,
-  getDoc,
-  where
+  limit
 } from 'firebase/firestore';
 import {
   ChevronRight,
@@ -54,7 +52,8 @@ import {
   UserCog,
   Shield,
   User,
-  Settings
+  Settings,
+  Lock
 } from 'lucide-react';
 
 // ==========================================
@@ -62,16 +61,19 @@ import {
 // ==========================================
 
 const DOMAIN_SUFFIX = '@ntu.strategy.com';
+
+// Modified Roles based on new requirements
 const ROLES = {
-  ADMIN: 'admin',
-  EDITOR: 'editor',
-  VISITOR: 'visitor',
-  GUEST: 'guest'
+  PROJECT_LEAD: 'project_lead', // 開發專案負責人 (最高權限)
+  SALES: 'sales',               // 開發業務人員 (一般權限)
+  PENDING: 'pending',           // 註冊待定人員 (無權限)
+  GUEST: 'guest'                // 未登入
 };
+
 const ROLE_LABELS = {
-  [ROLES.ADMIN]: '網站管理員',
-  [ROLES.EDITOR]: '資料庫管理員',
-  [ROLES.VISITOR]: '業務人員',
+  [ROLES.PROJECT_LEAD]: '開發專案負責人',
+  [ROLES.SALES]: '開發業務人員',
+  [ROLES.PENDING]: '註冊待定人員',
   [ROLES.GUEST]: '訪客 (未登入)'
 };
 
@@ -228,7 +230,7 @@ const useExcelExport = () => {
   return exportToExcel;
 };
 
-// --- Firestore Reference Helpers (Fixed Paths) ---
+// --- Firestore Reference Helpers ---
 const getUnitCollectionRef = (database) => collection(database, 'artifacts', appId, 'public', 'data', 'units');
 const getSettingsDocRef = (database) => doc(database, 'artifacts', appId, 'public', 'data', 'settings', 'config');
 const getMapChunksRef = (database) => collection(database, 'artifacts', appId, 'public', 'data', 'map_chunks');
@@ -294,11 +296,18 @@ class ErrorBoundary extends React.Component {
 // Level 3: Feature Components
 // ==========================================
 
-const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db, userId }) => {
+const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db }) => {
   const [isRegistering, setIsRegistering] = useState(false);
   const [empId, setEmpId] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+
+  // Set default password if admin
+  useEffect(() => {
+     if(empId === '00095' && !password) {
+        setPassword('Ctom00095');
+     }
+  }, [empId]);
 
   if (!isOpen) return null;
 
@@ -306,27 +315,44 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db, userId }) => 
     e.preventDefault();
     setIsLoading(true);
     const email = `${empId}${DOMAIN_SUFFIX}`;
+    
     try {
+      // Determine Role based on Hardcoded rule
+      const targetRole = (empId === '00095') ? ROLES.PROJECT_LEAD : ROLES.PENDING;
+
       if (isRegistering) {
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
         const user = userCredential.user;
         
         if (db) {
-            // Updated Logic: Check if there are ANY admins in the system
-            // If NO admins exist -> I become ADMIN.
-            // If ANY admin exists -> I become VISITOR.
-            const adminQuery = query(getAllUsersRef(db), where("role", "==", ROLES.ADMIN), limit(1));
-            const adminSnapshot = await getDocs(adminQuery);
-            const isFirstAdmin = adminSnapshot.empty;
-            const role = isFirstAdmin ? ROLES.ADMIN : ROLES.VISITOR;
-            
             await setDoc(getUserRoleRef(db, user.uid), {
-              employeeId: empId, role, email, createdAt: new Date().toISOString()
+              employeeId: empId, 
+              role: targetRole, 
+              email, 
+              createdAt: new Date().toISOString()
             });
-            setGlobalMessage({ text: isFirstAdmin ? '註冊成功！系統目前無管理員，您已自動升級為管理員。' : '註冊成功！請等待管理員核准權限。', type: 'success' });
+            
+            const msg = targetRole === ROLES.PROJECT_LEAD 
+                ? '註冊成功！系統辨識為開發專案負責人。' 
+                : '註冊成功！目前狀態為「註冊待定人員」，請等待管理員審核。';
+            setGlobalMessage({ text: msg, type: 'success' });
         }
       } else {
         await signInWithEmailAndPassword(auth, email, password);
+        // We will update role in the background via listener, 
+        // but if 00095 logs in, we can force update the doc just in case
+        if (db && empId === '00095') {
+            const user = auth.currentUser;
+            if(user) {
+                // Ensure 00095 is always Project Lead even if DB says otherwise
+                setDoc(getUserRoleRef(db, user.uid), {
+                   employeeId: empId, 
+                   role: ROLES.PROJECT_LEAD, 
+                   email,
+                   lastLogin: new Date().toISOString()
+                }, {merge: true}).catch(console.error);
+            }
+        }
         setGlobalMessage({ text: '登入成功！', type: 'success' });
       }
       onClose();
@@ -335,8 +361,8 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db, userId }) => 
       let msg = error.message;
       if (error.code === 'auth/invalid-email') msg = '工號格式錯誤';
       if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password' || error.code === "auth/invalid-credential") msg = '工號或密碼錯誤';
-      if (error.code === 'auth/email-already-in-use') msg = '此工號已註冊';
-      if (error.code === 'auth/operation-not-allowed') msg = '錯誤：未在 Firebase Console 啟用登入功能。請至 Authentication > Sign-in method 開啟 Email/Password。';
+      if (error.code === 'auth/email-already-in-use') msg = '此工號已註冊，請直接登入';
+      if (error.code === 'auth/operation-not-allowed') msg = '請至 Firebase Console 啟用 Email/Password 登入功能。';
       setGlobalMessage({ text: msg, type: 'error' });
     } finally {
       setIsLoading(false);
@@ -348,11 +374,11 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db, userId }) => 
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-8 relative">
         <button onClick={onClose} className="absolute top-4 right-4 text-slate-400 hover:text-slate-600"><X className="w-6 h-6" /></button>
         <h2 className="text-2xl font-bold text-slate-800 mb-2 flex items-center justify-center"><Shield className="w-6 h-6 mr-2 text-indigo-600" />{isRegistering ? '註冊新帳號' : '員工登入'}</h2>
-        <p className="text-center text-slate-500 mb-6 text-sm">{isRegistering ? '若系統無管理員，首位註冊者將自動取得權限' : '請使用您的工號與密碼登入'}</p>
+        <p className="text-center text-slate-500 mb-6 text-sm">{isRegistering ? '工號 00095 將自動成為負責人，其餘為待定' : '請使用您的工號與密碼登入'}</p>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">工號</label>
-            <div className="relative"><User className="absolute left-3 top-2.5 w-5 h-5 text-slate-400" /><input type="text" required value={empId} onChange={(e) => setEmpId(e.target.value.toUpperCase())} className="w-full pl-10 pr-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="例如: A001" /></div>
+            <div className="relative"><User className="absolute left-3 top-2.5 w-5 h-5 text-slate-400" /><input type="text" required value={empId} onChange={(e) => setEmpId(e.target.value.toUpperCase())} className="w-full pl-10 pr-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="例如: 00095" /></div>
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">密碼</label>
@@ -524,8 +550,9 @@ const UnitRecordView = ({ newUnitData, setNewUnitData, handleSaveUnit, handleAdd
   const availableBrands = [...new Set(equipmentDB.map((e) => e.brand))];
   const availableModels = [...new Set(equipmentDB.filter((e) => e.brand === equipmentSearch.brand).map((e) => e.model))];
   
-  const canEdit = userRole === ROLES.ADMIN || userRole === ROLES.EDITOR;
-  const canAddHistory = userRole !== ROLES.GUEST;
+  // Permission logic
+  const canEdit = userRole === ROLES.PROJECT_LEAD;
+  const canAddHistory = userRole === ROLES.SALES || userRole === ROLES.PROJECT_LEAD;
 
   return (
     <div className="bg-white p-8 rounded-2xl shadow-2xl space-y-8 max-w-5xl mx-auto my-6 border border-slate-200">
@@ -620,7 +647,9 @@ const Tab3TargetsMap = ({ appData, updatePrivateData, deleteUnits, exportToExcel
   const [mapImageUrl, setMapImageUrl] = useState(null);
   const [isMapLoading, setIsMapLoading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
-  const canEdit = userRole === ROLES.ADMIN || userRole === ROLES.EDITOR;
+  
+  // Permission Logic
+  const canEdit = userRole === ROLES.PROJECT_LEAD;
 
   const filteredUnits = useMemo(() => {
     return units.filter((unit) => {
@@ -763,8 +792,8 @@ const TabAdmin = ({ db, currentUserId }) => {
           <tbody className="bg-white divide-y divide-slate-200">{users.map(u => (
             <tr key={u.id} className="hover:bg-slate-50">
               <td className="px-6 py-4 font-medium">{u.employeeId}</td>
-              <td className="px-6 py-4"><span className={`px-2 py-1 text-xs font-semibold rounded-full ${u.role === ROLES.ADMIN ? 'bg-purple-100 text-purple-800' : 'bg-gray-100 text-gray-800'}`}>{ROLE_LABELS[u.role] || u.role}</span></td>
-              <td className="px-6 py-4">{u.id === currentUserId ? <span className="text-slate-400">自己</span> : <select value={u.role} onChange={(e) => updateUserRole(u.id, e.target.value)} className="border rounded px-2 py-1 text-sm"><option value={ROLES.VISITOR}>業務</option><option value={ROLES.EDITOR}>管理</option><option value={ROLES.ADMIN}>站長</option></select>}</td>
+              <td className="px-6 py-4"><span className={`px-2 py-1 text-xs font-semibold rounded-full ${u.role === ROLES.PROJECT_LEAD ? 'bg-purple-100 text-purple-800' : u.role === ROLES.SALES ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-800'}`}>{ROLE_LABELS[u.role] || u.role}</span></td>
+              <td className="px-6 py-4">{u.id === currentUserId ? <span className="text-slate-400">自己</span> : <select value={u.role} onChange={(e) => updateUserRole(u.id, e.target.value)} className="border rounded px-2 py-1 text-sm"><option value={ROLES.SALES}>業務</option><option value={ROLES.PROJECT_LEAD}>負責人</option><option value={ROLES.PENDING}>待定</option></select>}</td>
             </tr>
           ))}</tbody>
         </table>
@@ -832,7 +861,10 @@ const MainApp = () => {
              setUserRole(ROLES.GUEST);
         } else {
              // Immediate feedback: if logged in, assume visitor at least
-             setUserRole(ROLES.VISITOR); 
+             // This prevents the "Not Logged In" UI flash
+             // Real role will overwrite this in milliseconds via the listener below
+             // Default to PENDING to be safe
+             setUserRole(ROLES.PENDING); 
         }
       } else {
         setUserId(null);
@@ -848,17 +880,21 @@ const MainApp = () => {
     if (auth.currentUser?.isAnonymous) return;
     return onSnapshot(getUserRoleRef(db, userId), (doc) => {
       if (doc.exists()) {
-          setUserRole(doc.data().role || ROLES.VISITOR);
+          setUserRole(doc.data().role || ROLES.PENDING);
       } else {
           // If logged in but no role doc, force create it to prevent GUEST state limbo
           // This self-healing ensures users never get stuck
+          // Check if this is 00095
+          // We can't check employeeId here easily without user input, but we can default to PENDING
+          // The LoginModal handles the 00095 logic on login/register action. 
+          // Here is just a fallback for "Ghost" users.
           setDoc(getUserRoleRef(db, userId), {
-              role: ROLES.VISITOR,
+              role: ROLES.PENDING,
               createdAt: new Date().toISOString(),
               email: auth.currentUser.email
           }, {merge: true}).catch(console.error);
           
-          setUserRole(ROLES.VISITOR);
+          setUserRole(ROLES.PENDING);
       }
     }, (error) => console.log("Role listener info:", error.message)); 
   }, [db, userId]);
@@ -939,6 +975,17 @@ const MainApp = () => {
   };
 
   const renderTabContent = () => {
+    if (userRole === ROLES.PENDING) {
+        return (
+            <div className="flex flex-col items-center justify-center h-96 text-slate-500">
+                <Lock className="w-16 h-16 mb-4 text-slate-300" />
+                <h2 className="text-xl font-bold text-slate-700">帳號審核中</h2>
+                <p>您的帳號目前處於「待定」狀態。</p>
+                <p>請聯繫管理員開通您的權限。</p>
+            </div>
+        );
+    }
+
     if (editingUnitId || isNewUnit) {
        // Logic to find current unit data
        const currentUnit = editingUnitId ? appData.units.find(u => u.id === editingUnitId) : {
@@ -987,7 +1034,7 @@ const MainApp = () => {
        )
     }
 
-    if (currentTab === 'admin' && userRole !== ROLES.ADMIN) return <div className="p-8 text-center text-red-500">權限不足</div>;
+    if (currentTab === 'admin' && userRole !== ROLES.PROJECT_LEAD) return <div className="p-8 text-center text-red-500">權限不足</div>;
     
     switch (currentTab) {
       case 'targets': return <Tab3TargetsMap appData={appData} userRole={userRole} db={db} userId={userId} setGlobalMessage={setGlobalMessage} setCurrentTab={setCurrentTab} setEditingUnitId={setEditingUnitId} setIsNewUnit={setIsNewUnit} updatePrivateData={updatePrivateData} />;
@@ -1005,7 +1052,7 @@ const MainApp = () => {
     { id: 'calendar', label: '行事曆', icon: <Activity className="w-4 h-4" /> },
     { id: 'guidelines', label: '攻擊準則', icon: <Target className="w-4 h-4" /> },
   ];
-  if (userRole === ROLES.ADMIN) navItems.push({ id: 'admin', label: '人員管理', icon: <UserCog className="w-4 h-4" /> });
+  if (userRole === ROLES.PROJECT_LEAD) navItems.push({ id: 'admin', label: '人員管理', icon: <UserCog className="w-4 h-4" /> });
 
   return (
       <div className="min-h-screen bg-slate-50 font-sans text-slate-900">
