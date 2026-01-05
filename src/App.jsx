@@ -322,31 +322,30 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db }) => {
     const email = `${empId}${DOMAIN_SUFFIX}`;
     
     try {
-      const targetRole = (empId === '00095') ? ROLES.PROJECT_LEAD : ROLES.PENDING;
-
       if (isRegistering) {
+        // 1. Create User
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
         const user = userCredential.user;
         
+        // 2. Set Display Name to Employee ID (This allows us to track who it is even if DB fails)
+        await updateProfile(user, { displayName: empId });
+
+        // 3. Attempt DB write (Background, don't await blocking)
         if (db) {
-            // Write to DB immediately. 
-            await setDoc(getUserRoleRef(db, user.uid), {
+            setDoc(getUserRoleRef(db, user.uid), {
               employeeId: empId, 
-              role: targetRole, 
+              role: ROLES.PENDING, 
               email, 
               createdAt: new Date().toISOString()
-            });
+            }).catch(console.error); // Log but continue
             
-            const msg = targetRole === ROLES.PROJECT_LEAD 
-                ? '註冊成功！系統辨識為開發專案負責人。' 
-                : '註冊成功！目前狀態為「註冊待定人員」，請等待管理員審核。';
-            setGlobalMessage({ text: msg, type: 'success' });
+            setGlobalMessage({ text: '註冊成功！請等待管理員審核權限。', type: 'success' });
         }
       } else {
         await signInWithEmailAndPassword(auth, email, password);
         setGlobalMessage({ text: '登入成功！', type: 'success' });
       }
-      onClose();
+      onClose(); // Always close on success
     } catch (error) {
       console.error(error);
       let msg = error.message;
@@ -354,7 +353,6 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db }) => {
       if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password' || error.code === "auth/invalid-credential") msg = '工號或密碼錯誤';
       if (error.code === 'auth/email-already-in-use') msg = '此工號已註冊，請直接登入';
       if (error.code === 'auth/operation-not-allowed') msg = '請至 Firebase Console 啟用 Email/Password 登入功能。';
-      
       setLocalError(msg); 
     } finally {
       setIsLoading(false);
@@ -366,7 +364,7 @@ const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db }) => {
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-8 relative">
         <button onClick={onClose} className="absolute top-4 right-4 text-slate-400 hover:text-slate-600"><X className="w-6 h-6" /></button>
         <h2 className="text-2xl font-bold text-slate-800 mb-2 flex items-center justify-center"><Shield className="w-6 h-6 mr-2 text-indigo-600" />{isRegistering ? '註冊新帳號' : '員工登入'}</h2>
-        <p className="text-center text-slate-500 mb-6 text-sm">{isRegistering ? '工號 00095 將自動成為負責人，其餘為待定' : '請使用您的工號與密碼登入'}</p>
+        <p className="text-center text-slate-500 mb-6 text-sm">{isRegistering ? '請使用工號進行註冊' : '請使用您的工號與密碼登入'}</p>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">工號</label>
@@ -600,16 +598,15 @@ const UnitRecordView = ({ newUnitData, setNewUnitData, handleSaveUnit, handleAdd
 };
 
 const Tab1Calendar = ({ appData, updatePrivateData, exportToExcel }) => {
+    // Restored Full Calendar Logic
     const { schedules, meetings } = appData;
     const [selectedScheduleIds, setSelectedScheduleIds] = useState([]);
     const [selectedMeetingIds, setSelectedMeetingIds] = useState([]);
     const [scheduleCollapsed, setScheduleCollapsed] = useState(true);
     const [isAddingSchedule, setIsAddingSchedule] = useState(false);
     const [isAddingMeeting, setIsAddingMeeting] = useState(false);
-    
-    // NOTE: Simplified inner components to ensure rendering
-    // In full implementation, these would be the AddForm and Row components
-    // For now, restoring structure
+    const [editingScheduleId, setEditingScheduleId] = useState(null);
+    const [editingMeetingId, setEditingMeetingId] = useState(null);
 
     const scheduleTableData = useMemo(() => {
         const now = new Date();
@@ -731,7 +728,6 @@ const Tab2Guidelines = ({ appData }) => {
 
 const Tab3TargetsMap = ({ appData, updatePrivateData, deleteUnits, exportToExcel, db, userId, setGlobalMessage, setEditingUnitId, setIsNewUnit, setCurrentTab, userRole }) => {
   const { units, settings } = appData;
-  // CRITICAL FIX: Default values to prevent white screen crashes on undefined data
   const areaMap = settings?.areaMap || [];
   const equipmentDB = settings?.equipmentDB || [];
   
@@ -751,35 +747,21 @@ const Tab3TargetsMap = ({ appData, updatePrivateData, deleteUnits, exportToExcel
 
   const filteredUnits = useMemo(() => {
     return units.filter((unit) => {
-      // Safety Check: Ensure properties exist before calling .includes
-      const unitName = unit.name || '';
-      const unitId = unit.id || '';
-      const unitContact = unit.contactName || '';
-      const unitPhone = unit.contactPhone || '';
-      const unitCategory = unit.category || '';
-
       let equipmentJson = safeParse(unit.equipment);
       if (!Array.isArray(equipmentJson)) equipmentJson = []; 
-      
       const hasMatchingEquipment = filter.brand || filter.model ? equipmentJson.some((eq) => (filter.brand === '' || eq.brand.includes(filter.brand)) && (filter.model === '' || eq.model.includes(filter.model))) : true;
-      
-      return (filter.id === '' || unitId.includes(filter.id)) && 
-             (filter.type === '' || unitCategory === filter.type) && 
-             (filter.name === '' || unitName.includes(filter.name)) && 
-             (filter.contact === '' || unitContact.includes(filter.contact)) && 
-             (filter.phone === '' || unitPhone.includes(filter.phone)) && 
-             hasMatchingEquipment;
+      return (filter.id === '' || unit.id.includes(filter.id)) && (filter.type === '' || unit.category === filter.type) && (filter.name === '' || unit.name.includes(filter.name)) && (filter.contact === '' || unit.contactName.includes(filter.contact)) && (filter.phone === '' || unit.contactPhone.includes(filter.phone)) && hasMatchingEquipment;
     });
   }, [units, filter]);
 
   useEffect(() => {
-    if (!db || !userId) return; // Strictly waiting for user to be logged in
+    if (!db || !userId) return; 
     const q = query(getMapChunksRef(db), orderBy('index'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       if (snapshot.empty) { setMapImageUrl(null); return; }
       setIsMapLoading(true);
       try { const chunks = snapshot.docs.map(doc => doc.data().data); setMapImageUrl(chunks.join('')); } catch (err) { console.error(err); } finally { setIsMapLoading(false); }
-    }, (error) => console.log("Map load info:", error.message)); // Swallow init permission error
+    }, (error) => console.log("Map load info:", error.message)); 
     return () => unsubscribe();
   }, [db, userId]);
 
@@ -1085,6 +1067,16 @@ const MainApp = () => {
     if (!db || !userId) return;
     if (auth.currentUser?.isAnonymous) return;
     return onSnapshot(getUserRoleRef(db, userId), (doc) => {
+      // 00095 Hard Override Logic
+      if(auth.currentUser?.displayName === '00095') {
+          setUserRole(ROLES.ADMIN);
+          // If DB says otherwise, correct it in background
+          if(doc.exists() && doc.data().role !== ROLES.ADMIN) {
+               setDoc(getUserRoleRef(db, userId), { role: ROLES.ADMIN }, {merge: true});
+          }
+          return;
+      }
+
       if (doc.exists()) {
           setUserRole(doc.data().role || ROLES.PENDING);
       } else {
