@@ -37,13 +37,15 @@ import {
   Activity,
   Users,
   Building,
-  Target,
+  Target
 } from 'lucide-react';
 
 // --- Global Firebase Configuration and Utility Functions ---
 
-const appId =
-  typeof __app_id !== 'undefined' ? __app_id : 'ntu-strategy-default-app';
+// Sanitize appId to ensure it's a valid single-segment path identifier
+const rawAppId = typeof __app_id !== 'undefined' ? __app_id : 'ntu-strategy-default-app';
+const appId = String(rawAppId).replace(/[^a-zA-Z0-9_-]/g, '_');
+
 const firebaseConfig =
   typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
 const initialAuthToken =
@@ -61,22 +63,14 @@ const safeParse = (data) => {
 
 // --- Styles Constants (Replaces @apply for StackBlitz compatibility) ---
 const styles = {
-  formInput:
-    'w-full px-4 py-2 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 outline-none',
-  formSelect:
-    'w-full px-4 py-2 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 outline-none',
-  formTextarea:
-    'w-full px-4 py-2 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 outline-none',
-  btnPrimary:
-    'px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition shadow-lg shadow-indigo-500/30 flex items-center justify-center font-medium active:scale-95',
-  btnSecondary:
-    'px-4 py-2 bg-white text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 transition shadow-sm flex items-center justify-center font-medium active:scale-95',
-  btnDanger:
-    'px-4 py-2 bg-rose-50 text-rose-600 border border-rose-200 rounded-lg hover:bg-rose-100 transition flex items-center justify-center font-medium disabled:opacity-50 disabled:cursor-not-allowed',
-  btnInfo:
-    'px-4 py-2 bg-sky-50 text-sky-600 border border-sky-200 rounded-lg hover:bg-sky-100 transition flex items-center justify-center font-medium',
-  checkbox:
-    'w-5 h-5 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500',
+  formInput: "w-full px-4 py-2 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 outline-none",
+  formSelect: "w-full px-4 py-2 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 outline-none",
+  formTextarea: "w-full px-4 py-2 bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 outline-none",
+  btnPrimary: "px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition shadow-lg shadow-indigo-500/30 flex items-center justify-center font-medium active:scale-95",
+  btnSecondary: "px-4 py-2 bg-white text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 transition shadow-sm flex items-center justify-center font-medium active:scale-95",
+  btnDanger: "px-4 py-2 bg-rose-50 text-rose-600 border border-rose-200 rounded-lg hover:bg-rose-100 transition flex items-center justify-center font-medium disabled:opacity-50 disabled:cursor-not-allowed",
+  btnInfo: "px-4 py-2 bg-sky-50 text-sky-600 border border-sky-200 rounded-lg hover:bg-sky-100 transition flex items-center justify-center font-medium",
+  checkbox: "w-5 h-5 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500"
 };
 
 // --- Initial Data Structures for Defaults ---
@@ -213,9 +207,7 @@ const App = () => {
 
   // Inject Tailwind CSS for StackBlitz preview
   useEffect(() => {
-    const existingScript = document.querySelector(
-      'script[src="https://cdn.tailwindcss.com"]'
-    );
+    const existingScript = document.querySelector('script[src="https://cdn.tailwindcss.com"]');
     if (!existingScript) {
       const script = document.createElement('script');
       script.src = 'https://cdn.tailwindcss.com';
@@ -223,19 +215,21 @@ const App = () => {
     }
   }, []);
 
+  // Firestore Refs
   const getUnitCollectionRef = useCallback(
-    (database) => collection(database, `artifacts/${appId}/public/data/units`),
+    (database) => collection(database, 'artifacts', appId, 'public', 'data', 'units'),
     []
   );
   const getPrivateDocRef = useCallback(
     (database, uid, collectionName, docId) =>
       doc(
         database,
-        `artifacts/${appId}/users/${uid}/${collectionName}/${docId}`
+        'artifacts', appId, 'users', uid, collectionName, docId
       ),
     []
   );
 
+  // Initialize Firebase and Auth (Follows Mandatory Pattern)
   useEffect(() => {
     try {
       if (Object.keys(firebaseConfig).length === 0) {
@@ -250,25 +244,28 @@ const App = () => {
       setDb(database);
       setAuth(authentication);
 
-      const unsubscribe = onAuthStateChanged(authentication, async (user) => {
-        if (!user) {
-          try {
-            if (initialAuthToken) {
-              const credentials = await signInWithCustomToken(
-                authentication,
-                initialAuthToken
-              );
-              setUserId(credentials.user.uid);
-            } else {
-              const credentials = await signInAnonymously(authentication);
-              setUserId(credentials.user.uid);
-            }
-          } catch (e) {
-            console.error('Authentication failed:', e);
-            setUserId(crypto.randomUUID());
+      // Auth Logic: Init auth first, then setup listener
+      const initAuth = async () => {
+        try {
+          if (initialAuthToken) {
+            await signInWithCustomToken(authentication, initialAuthToken);
+          } else {
+            await signInAnonymously(authentication);
           }
-        } else {
+        } catch (e) {
+          console.error('Authentication failed:', e);
+          setGlobalMessage({ text: '驗證失敗，請重新整理頁面。', type: 'error' });
+          setIsLoading(false);
+        }
+      };
+
+      initAuth();
+
+      const unsubscribe = onAuthStateChanged(authentication, (user) => {
+        if (user) {
           setUserId(user.uid);
+        } else {
+          setUserId(null);
         }
         setIsLoading(false);
       });
@@ -280,9 +277,12 @@ const App = () => {
     }
   }, []);
 
+  // Data Listeners
   useEffect(() => {
+    // Only proceed if db is initialized and we have a valid userId from Auth
     if (!db || !userId) return;
 
+    // Listener for Public Units Data
     const unsubscribeUnits = onSnapshot(
       getUnitCollectionRef(db),
       (snapshot) => {
@@ -295,9 +295,13 @@ const App = () => {
         }));
         setAppData((prev) => ({ ...prev, units }));
       },
-      (error) => console.error('Error listening to units:', error)
+      (error) => {
+        console.error('Error listening to units:', error);
+        // Silent fail or user notification depending on severity
+      }
     );
 
+    // Listener for Private Settings Data
     const settingsDocRef = getPrivateDocRef(db, userId, 'settings', 'params');
     const unsubscribeSettings = onSnapshot(
       settingsDocRef,
@@ -319,6 +323,7 @@ const App = () => {
             meetings: data.meetings || [],
           }));
         } else {
+          // Initialize private doc if not exists
           setDoc(settingsDocRef, {
             ...initialSettings,
             schedules: initialSettings.schedules || [],
@@ -335,7 +340,7 @@ const App = () => {
       unsubscribeUnits();
       unsubscribeSettings();
     };
-  }, [db, userId]);
+  }, [db, userId]); // Re-run when userId changes (authenticated)
 
   const updatePrivateData = async (fields) => {
     if (!db || !userId) return;
@@ -350,7 +355,7 @@ const App = () => {
   };
 
   const updateUnit = async (id, data) => {
-    if (!db) return;
+    if (!db || !userId) return;
     try {
       const docRef = doc(getUnitCollectionRef(db), id);
       const updateData = {};
@@ -371,7 +376,7 @@ const App = () => {
   };
 
   const deleteUnits = async (ids) => {
-    if (!db) return;
+    if (!db || !userId) return;
     try {
       await Promise.all(
         ids.map((id) => deleteDoc(doc(getUnitCollectionRef(db), id)))
@@ -384,10 +389,8 @@ const App = () => {
   const LoadingState = () => (
     <div className="flex flex-col items-center justify-center h-screen bg-slate-50 text-slate-500">
       <Loader className="w-12 h-12 animate-spin text-indigo-600 mb-4" />
-      <p className="text-lg font-medium text-slate-700">
-        正在載入戰情資料庫...
-      </p>
-      <p className="text-sm opacity-70">使用者 ID: {userId || '驗證中...'}</p>
+      <p className="text-lg font-medium text-slate-700">正在載入戰情資料庫...</p>
+      <p className="text-sm opacity-70">使用者 ID: {String(userId || '驗證中...')}</p>
     </div>
   );
 
@@ -592,7 +595,7 @@ const App = () => {
               />
             ) : (
               <span className="font-mono text-emerald-600 font-bold">
-                ${editData.resourceAmount?.toLocaleString() || 0}
+                ${(editData.resourceAmount || 0).toLocaleString()}
               </span>
             )}
           </td>
@@ -1437,16 +1440,10 @@ const App = () => {
           rows="4"
         />
         <div className="flex justify-end space-x-2">
-          <button
-            onClick={onCancel}
-            className={`${styles.btnSecondary} text-sm`}
-          >
+          <button onClick={onCancel} className={`${styles.btnSecondary} text-sm`}>
             取消
           </button>
-          <button
-            onClick={handleSave}
-            className={`${styles.btnPrimary} text-sm`}
-          >
+          <button onClick={handleSave} className={`${styles.btnPrimary} text-sm`}>
             <Save className="w-4 h-4 mr-1" /> 儲存
           </button>
         </div>
@@ -1709,9 +1706,7 @@ const App = () => {
               >
                 {mapState.isDrawing ? '點擊結束' : '圈選區域'}
               </button>
-              <label
-                className={`${styles.btnPrimary} cursor-pointer flex items-center bg-indigo-600 hover:bg-indigo-700`}
-              >
+              <label className={`${styles.btnPrimary} cursor-pointer flex items-center bg-indigo-600 hover:bg-indigo-700`}>
                 <input
                   type="file"
                   accept="image/*"
@@ -1785,8 +1780,12 @@ const App = () => {
                 style={{
                   left: `${Math.min(mapState.start.x, mapState.current.x)}%`,
                   top: `${Math.min(mapState.start.y, mapState.current.y)}%`,
-                  width: `${Math.abs(mapState.start.x - mapState.current.x)}%`,
-                  height: `${Math.abs(mapState.start.y - mapState.current.y)}%`,
+                  width: `${Math.abs(
+                    mapState.start.x - mapState.current.x
+                  )}%`,
+                  height: `${Math.abs(
+                    mapState.start.y - mapState.current.y
+                  )}%`,
                 }}
               ></div>
             )}
@@ -1899,8 +1898,7 @@ const App = () => {
                 disabled={selectedUnitIds.length === 0}
                 className={`${styles.btnDanger} py-1.5 text-sm`}
               >
-                <Trash2 className="w-4 h-4 mr-1" /> 刪除 (
-                {selectedUnitIds.length})
+                <Trash2 className="w-4 h-4 mr-1" /> 刪除 ({selectedUnitIds.length})
               </button>
               <button
                 onClick={exportUnits}
@@ -1939,11 +1937,7 @@ const App = () => {
   const FilterSelect = ({ label, value, onChange, children }) => (
     <div className="flex flex-col">
       <label className="text-xs font-bold text-slate-500 mb-1">{label}</label>
-      <select
-        value={value}
-        onChange={onChange}
-        className={`${styles.formSelect} text-sm`}
-      >
+      <select value={value} onChange={onChange} className={`${styles.formSelect} text-sm`}>
         {children}
       </select>
     </div>
@@ -2116,7 +2110,8 @@ const App = () => {
     }
     const dataToSave = {
       ...newUnitData,
-      subgroup: newUnitData.category === 'Academic' ? newUnitData.subgroup : '',
+      subgroup:
+        newUnitData.category === 'Academic' ? newUnitData.subgroup : '',
     };
 
     if (isNewUnit) {
@@ -2922,7 +2917,10 @@ const App = () => {
               className={`${styles.formInput} w-24`}
               placeholder="代號"
             />
-            <button onClick={handleAddBuilding} className={styles.btnPrimary}>
+            <button
+              onClick={handleAddBuilding}
+              className={styles.btnPrimary}
+            >
               <Plus className="w-4 h-4 mr-1" /> 新增
             </button>
           </div>
@@ -3040,18 +3038,14 @@ const App = () => {
         return <Tab5Settings />;
       default:
         return <Tab3TargetsMap />;
-    }
+      }
   };
 
   const navItems = [
     { id: 'targets', label: '戰情地圖', icon: <MapPin className="w-4 h-4" /> },
     { id: 'calendar', label: '行事曆', icon: <Activity className="w-4 h-4" /> },
     { id: 'record', label: '拜訪紀錄', icon: <Edit className="w-4 h-4" /> },
-    {
-      id: 'guidelines',
-      label: '攻擊準則',
-      icon: <Target className="w-4 h-4" />,
-    },
+    { id: 'guidelines', label: '攻擊準則', icon: <Target className="w-4 h-4" /> },
     { id: 'settings', label: '設定', icon: <Building className="w-4 h-4" /> },
   ];
 
@@ -3068,9 +3062,7 @@ const App = () => {
                 <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-slate-900 to-slate-700">
                   2026 台大攻略戰情室
                 </h1>
-                <p className="text-xs text-slate-500 font-mono">
-                  ID: {userId ? userId.substring(0, 8) + '...' : 'Guest'}
-                </p>
+                <p className="text-xs text-slate-500 font-mono">ID: {userId ? String(userId).substring(0, 8) + '...' : 'Guest'}</p>
               </div>
             </div>
           </div>
@@ -3087,11 +3079,9 @@ const App = () => {
                   onClick={() => setCurrentTab(item.id)}
                   className={`
                     relative px-5 py-3 text-sm font-medium transition-all duration-300 rounded-t-lg flex items-center space-x-2 whitespace-nowrap
-                    ${
-                      isActive
-                        ? 'text-indigo-600 bg-indigo-50/50'
-                        : 'text-slate-500 hover:text-slate-700 hover:bg-slate-50'
-                    }
+                    ${isActive 
+                      ? 'text-indigo-600 bg-indigo-50/50' 
+                      : 'text-slate-500 hover:text-slate-700 hover:bg-slate-50'}
                   `}
                 >
                   {item.icon}
@@ -3110,8 +3100,8 @@ const App = () => {
       {globalMessage.text && (
         <div
           className={`fixed top-24 right-6 p-4 rounded-xl shadow-2xl z-50 flex items-center space-x-3 transform transition-all duration-500 animate-slide-in ${
-            globalMessage.type === 'success'
-              ? 'bg-emerald-600 text-white'
+            globalMessage.type === 'success' 
+              ? 'bg-emerald-600 text-white' 
               : 'bg-rose-600 text-white'
           }`}
         >
@@ -3130,7 +3120,9 @@ const App = () => {
         </div>
       )}
 
-      <main className="py-6 animate-fade-in">{renderTabContent()}</main>
+      <main className="py-6 animate-fade-in">
+        {renderTabContent()}
+      </main>
     </div>
   );
 };
