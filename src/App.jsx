@@ -51,7 +51,8 @@ import {
   LogOut,
   UserCog,
   Shield,
-  User
+  User,
+  Settings
 } from 'lucide-react';
 
 // ==========================================
@@ -80,19 +81,31 @@ const getAppId = () => {
 const rawAppId = getAppId();
 const appId = String(rawAppId).replace(/[^a-zA-Z0-9_-]/g, '_');
 
+// Hardcoded config provided by user
+const USER_PROVIDED_CONFIG = {
+  apiKey: "AIzaSyD2euHjulZko-qcQzQxJcAv4FHWTtjzqv0",
+  authDomain: "ntu-etf2026.firebaseapp.com",
+  projectId: "ntu-etf2026",
+  storageBucket: "ntu-etf2026.firebasestorage.app",
+  messagingSenderId: "21357424438",
+  appId: "1:21357424438:web:57dd0394b2bcb47ea34d97",
+  measurementId: "G-FBGETJVL6Q"
+};
+
 // Robust config retrieval
+// Fix: Use hardcoded config if environment config is missing
 const getFirebaseConfig = () => {
   try {
     if (typeof __firebase_config !== 'undefined' && __firebase_config) {
       return JSON.parse(__firebase_config);
     }
-    return null;
+    return USER_PROVIDED_CONFIG;
   } catch (e) {
-    console.error("Error parsing firebase config:", e);
-    return null;
+    console.warn("No valid firebase config found in environment, using hardcoded config.");
+    return USER_PROVIDED_CONFIG;
   }
 };
-const firebaseConfig = getFirebaseConfig();
+
 const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
 // Initial Data Structure
@@ -279,6 +292,45 @@ class ErrorBoundary extends React.Component {
 // ==========================================
 // Level 3: Feature Components
 // ==========================================
+
+const ConfigModal = ({ onSave }) => {
+  // This component is kept for fallback but should not be shown if USER_PROVIDED_CONFIG works
+  const [configStr, setConfigStr] = useState('');
+  const [error, setError] = useState('');
+
+  const handleSave = () => {
+    try {
+      let jsonStr = configStr;
+      const match = configStr.match(/{[\s\S]*}/);
+      if (match) {
+        jsonStr = match[0];
+      }
+      
+      const config = JSON.parse(jsonStr);
+      if (!config.apiKey || !config.projectId) throw new Error("缺少必要欄位 (apiKey, projectId)");
+      onSave(config);
+    } catch (e) {
+      setError("格式錯誤: " + e.message);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-900 text-white p-4">
+      <div className="bg-slate-800 p-8 rounded-2xl shadow-2xl w-full max-w-2xl border border-slate-700">
+        <h2 className="text-2xl font-bold mb-4 flex items-center text-indigo-400"><Settings className="mr-2" /> 系統初始化</h2>
+        <p className="text-slate-400 mb-4">偵測到 Firebase 設定缺失。請輸入設定檔。</p>
+        <textarea
+          value={configStr}
+          onChange={(e) => setConfigStr(e.target.value)}
+          className="w-full h-64 bg-slate-900 border border-slate-700 rounded-lg p-4 font-mono text-sm text-green-400 mb-4 focus:ring-2 focus:ring-indigo-500 outline-none"
+          placeholder="{ ... }"
+        />
+        {error && <p className="text-rose-400 mb-4 text-sm">{error}</p>}
+        <button onClick={handleSave} className="w-full bg-indigo-600 hover:bg-indigo-700 py-3 rounded-lg font-bold transition">儲存設定並啟動</button>
+      </div>
+    </div>
+  );
+};
 
 const LoginModal = ({ isOpen, onClose, auth, setGlobalMessage, db, userId }) => {
   const [isRegistering, setIsRegistering] = useState(false);
@@ -564,6 +616,7 @@ const Tab1Calendar = ({ appData, updatePrivateData, exportToExcel }) => {
 };
 
 const Tab2Guidelines = ({ appData }) => {
+  // CRITICAL FIX: Safe access to prevent crash on initial load
   const guidelines = appData.settings?.guidelines || [];
   const talkScripts = appData.settings?.talkScripts || [];
 
@@ -777,14 +830,30 @@ const MainApp = () => {
 
   // Initialize Firebase
   useEffect(() => {
+    const firebaseConfig = getFirebaseConfig();
     if (!firebaseConfig || Object.keys(firebaseConfig).length === 0) {
-        console.error("Firebase config missing");
+        // Safe check for config existence
+        // In local dev this might be empty, we handle it by not crashing
         return;
     }
-    const app = initializeApp(firebaseConfig);
-    setDb(getFirestore(app));
-    setAuth(getAuth(app));
+    try {
+        const app = initializeApp(firebaseConfig);
+        setDb(getFirestore(app));
+        setAuth(getAuth(app));
+    } catch(e) {
+        console.error("Firebase init failed:", e);
+    }
   }, []);
+  
+  // Show config modal if config missing
+  const [showConfigModal, setShowConfigModal] = useState(false);
+  useEffect(() => {
+      const config = getFirebaseConfig();
+      if (!config && !showConfigModal) {
+          setShowConfigModal(true);
+      }
+  }, []);
+
 
   // Auth Listener
   useEffect(() => {
@@ -822,7 +891,9 @@ const MainApp = () => {
     const settingsRef = getSettingsDocRef(db);
     const unsubSettings = onSnapshot(settingsRef, (docSnap) => {
       if (docSnap.exists()) {
-        setAppData(p => ({ ...p, settings: { ...initialSettings, ...docSnap.data() } }));
+        const data = docSnap.data();
+        // CRITICAL FIX: Merge with initialSettings to prevent undefined properties
+        setAppData(p => ({ ...p, settings: { ...initialSettings, ...data } }));
       } else {
         // Initialize if missing, but only if authenticated to avoid permission error loop
         if (userId) {
@@ -967,6 +1038,7 @@ const MainApp = () => {
         <main className="py-6">{renderTabContent()}</main>
         {globalMessage.text && <div className={`fixed top-24 right-6 p-4 rounded-xl shadow-2xl z-50 flex items-center space-x-3 animate-slide-in ${globalMessage.type === 'error' ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'}`}><span className="font-medium">{globalMessage.text}</span><button onClick={() => setGlobalMessage({ text: '', type: '' })}><X className="w-4 h-4" /></button></div>}
         <LoginModal isOpen={isLoginModalOpen} onClose={() => setIsLoginModalOpen(false)} auth={auth} db={db} userId={userId} setGlobalMessage={setGlobalMessage} />
+        {showConfigModal && <ConfigModal onSave={(conf) => { localStorage.setItem('manual_firebase_config', JSON.stringify(conf)); window.location.reload(); }} />}
       </div>
   );
 };
